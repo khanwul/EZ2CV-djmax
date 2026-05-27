@@ -1,0 +1,47 @@
+# EZ2CV — profiles/1920x1080/5k.toml  (LAYER 1: geometry calibration)
+# =============================================================================
+# Pixel geometry for ONE (resolution, key_mode) pair. All numbers here are in
+# native pixels for 1920x1080 — they are NOT scaled by the resolver.
+# Calibrated from a speed-8.0, 60fps, 1920x1080 EZ2ON recording.
+# To support a new resolution: add profiles/<W>x<H>/<keymode>.toml (hand-cal,
+# or bootstrap via the auto-calibration tool).
+# =============================================================================
+
+[meta]
+display_resolution = [1920, 1080]
+key_mode           = "5k"
+key_count          = 5            # MUST equal len(lane_colors["5k"]) in skin.toml
+
+[playfield]
+top    = 0
+bottom = 835
+
+# --- parametric lanes --------------------------------------------------------
+# Lanes are DERIVED, not listed. Lane i (0-indexed) occupies:
+#   x_range = [field_left + i*lane_width, field_left + (i+1)*lane_width]
+# For 5k this reproduces the old explicit lanes exactly:
+#   L1[755,837] L2[837,919] L3[919,1001] L4[1001,1083] L5[1083,1165]
+[lanes]
+field_left = 755
+lane_width = 82                   # == note width; the visual/detection lane
+
+[judgment]
+line_y                 = 824      # center of judgment bar at HIGHEST position
+oscillation_range      = 2        # +-2px bar movement (informational)
+note_height            = 22       # note (and template) height in px
+trigger_template_y_top = 802      # = line_y - note_height. Resolver verifies this.
+
+[beat_indicator]
+# POW LED ROI [x1,y1,x2,y2], native pixels. Detection method is in skin.toml.
+roi = [728, 844, 731, 851]
+
+[matching]
+roi_x_margin      = 5             # matching ROI = lane x_range +/- this each side
+tail_search_y_max = 790           # don't search tail edges below this y
+
+[measurements]
+pixels_per_frame    = 33.0        # note vertical movement (median; mean 32.7, std 6.8)
+frames_per_traverse = 25          # ~frames from playfield top to judgment line
+note_width_px       = 82          # resolver validates against template width
+note_height_px      = 22          # resolver validates against template height
+min_longnote_px     = 35          # head->tail gap in px below this -> tap, not longnote

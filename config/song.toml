@@ -1,0 +1,25 @@
+# EZ2CV — song.toml  (LAYER 1: per-run config)
+# =============================================================================
+# This file describes ONE run only. It contains NO calibration numbers.
+# It points, by name, at:
+#   - a skin profile   -> skins/<skin>/skin.toml
+#   - a geometry profile -> profiles/<display_resolution>/<key_mode>.toml
+# The resolver (calibration.py) merges all three into a single Calibration
+# object that Layer 2+ consume. To analyze a different video/skin/mode, only
+# this file changes.
+# =============================================================================
+
+[setup]
+skin               = "ez2on"        # -> config/skins/ez2on/
+key_mode           = "5k"           # -> lane_colors["5k"], templates dir 5k/
+display_resolution = "1920x1080"    # -> config/profiles/1920x1080/5k.toml
+
+[capture]
+video_path = ""                     # path to the gameplay video (abs, or relative to this file)
+fps        = 60.0                   # recording frame rate (calibration is fps-locked)
+note_speed = 8.0                    # in-game scroll speed (calibration is speed-locked)
+
+[song]
+resolution = 192                    # ticks per beat (covers 4/8/16/24/32-bit) — INVARIANT
+min_bpm    = 0.0                    # user input after checking in-game (0 = unset)
+max_bpm    = 0.0                    # user input after checking in-game (0 = unset)

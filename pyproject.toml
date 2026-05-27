@@ -7,4 +7,5 @@ requires-python = ">=3.14"
 dependencies = [
     "numpy>=2.4.6",
     "opencv-python>=4.13.0.92",
+    "matplotlib>=3.9.0",
 ]

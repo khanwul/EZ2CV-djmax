@@ -219,7 +219,11 @@ __marimo__/
 
 # 
 CLAUDE.md
-/doc
 /smp
-/config
+/config/*.toml
+/config/skins/ez2on/5k/*
+!/config/song.toml
 /.claude
+/out/*
+measureline_calibrate.py
+/doc/game_mechanism.md

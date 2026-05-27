@@ -23,7 +23,7 @@ Design invariants
 
 Usage
 -----
-    from preprocessor import Preprocessor
+    from layer2.preprocessor import Preprocessor
     pre = Preprocessor.from_config("config/song.toml")
     for pf in pre:                       # one PreprocessedFrame per video frame
         for lane in pf.lanes:
@@ -33,14 +33,17 @@ Usage
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import cv2
 import numpy as np
 
-from calibration import Calibration, CHANNEL_EXTRACTORS, resolve_calibration
+from layer1.calibration import Calibration, CHANNEL_EXTRACTORS, resolve_calibration
 
 
 # =============================================================================
@@ -246,7 +249,7 @@ class Preprocessor:
 if __name__ == "__main__":
     import sys, time
 
-    path = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
+    path = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
     pre = Preprocessor.from_config(path)
     print(f"video      : {pre.cal.video_path}")
     print(f"frame_count: {pre.frame_count}")

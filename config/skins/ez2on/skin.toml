@@ -1,0 +1,92 @@
+# EZ2CV — skins/ez2on/skin.toml  (LAYER 1: skin definition)
+# =============================================================================
+# Everything here is a property of the SKIN, not of the resolution.
+# Resolution-dependent pixel geometry lives in profiles/<res>/<keymode>.toml.
+# Adding a new key mode = add a row to [lane_colors] + a template folder.
+# =============================================================================
+
+[skin]
+name                 = "ez2on"
+reference_resolution = [1920, 1080]   # resolution the template PNGs were cut at.
+                                      # If a profile's resolution differs, the
+                                      # resolver rescales templates by
+                                      # scale = profile_w / reference_w.
+
+# --- lane color pattern per key mode -----------------------------------------
+# Length MUST equal the profile's key_count. The resolver validates this.
+[lane_colors]
+"4k" = ["white", "cyan", "cyan", "white"]
+"5k" = ["white", "cyan", "white", "cyan", "white"]
+"6k" = ["white", "cyan", "white", "white", "cyan", "white"]
+# "8k" = ["white", "cyan", "white", "cyan", "cyan", "white", "cyan", "white"]
+# NOTE: 4k/6k/8k patterns are placeholders — verify against the real skin
+#       before using those modes. 5k is the calibrated/verified one.
+
+# --- templates, grouped by note color ----------------------------------------
+# Filenames only. The resolver builds the full path as:
+#   skins/<skin>/<key_mode>/<filename>
+# so each key mode has its own template folder (note width differs per mode).
+[templates.white]
+note   = "note_white.png"
+lnhead = "note_white_lnhead.png"
+lntail = "note_white_lntail.png"
+
+[templates.cyan]
+note   = "note_cyan.png"
+lnhead = "note_cyan_lnhead.png"
+lntail = "note_cyan_lntail.png"
+
+# --- Stage 1 detection channel per color -------------------------------------
+# Which channel best separates a note of this color from the (black) lane bg.
+# Verified on 1920x1080 speed-8.0 video:
+#   white note ~218 in gray;  cyan note ~166 in gray BUT ~231 in max(B,G).
+#   Using max_bg for cyan nearly equalizes both colors -> single Stage 1 gate.
+# Valid values: gray | max_bg | max_gr | blue | green | red
+[detection.channel]
+white = "gray"
+cyan  = "max_bg"
+
+# --- thresholds (skin-dependent: note brightness/contrast varies by skin) -----
+[thresholds]
+matching          = 0.85   # Stage 2 min template-match score (TM_CCOEFF_NORMED).
+                           # VERIFIED: white ~0.97, cyan ~0.92 on this skin.
+stage1_brightness = 60.0   # Stage 1 gate: a row's MEAN value (0-255) on its
+                           # detection channel must exceed this to be "lit".
+                           # Recall-priority / loose by design (bg is ~0,
+                           # note rows are ~166-230, so 60 is safely loose).
+
+# Optional per-color overrides. Resolver falls back to the values above.
+# [thresholds.matching_by_color]
+# cyan = 0.80
+# [thresholds.stage1_by_color]
+# cyan = 50.0
+
+# --- POW LED beat indicator: detection METHOD (skin-dependent) ----------------
+# The ROI *coordinates* are pixel geometry -> they live in the profile.
+[beat_indicator]
+channel          = "green"
+detection_method = "diff"
+diff_threshold   = 2.0
+
+# --- measure line detection --------------------------------------------------
+# Measure lines span the full playfield width; detected by row-mean brightness.
+# Layer 3 stacks the per-lane Stage 1 projections and keeps a row only if it is
+# (1) lit in (almost) every lane, (2) within a mid-grey brightness window, and
+# (3) thin (a chord of notes is ~22px thick).
+#
+#   channel        : which single-channel image to inspect (gray suits the white line)
+#   min_brightness : per-lane row mean must exceed this to count as "lit"
+#   max_brightness : reject note-bright bands (~218 on this skin)
+#   max_thickness  : reject thick bands (a chord; the judgment bar; glow)
+#   lane_slack     : allow this many lanes to miss the coincidence (occlusion)
+[measure_line]
+channel        = "gray"
+# Calibrated empirically on the Dream Walker capture (see measureline_calibrate.py):
+# per-band mean of thin full-width coincidence runs is ~p10=116, p50=127, p90=144,
+# floor 94. 1920x1080 captures render the line ~1px thick but a few thicker
+# frames exist, so max_thickness has headroom. Note bodies (~218) and the
+# judgment bar are still rejected by the upper brightness gate.
+min_brightness = 90.0
+max_brightness = 180.0
+max_thickness  = 8
+lane_slack     = 1

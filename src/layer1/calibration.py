@@ -17,7 +17,7 @@ Resolution flow
 
 Usage
 -----
-    from calibration import resolve_calibration
+    from layer1.calibration import resolve_calibration
     cal = resolve_calibration("config/song.toml")
     cal.summary()                       # human-readable dump
     for lane in cal.lanes:              # Layer 2 iterates here
@@ -65,6 +65,27 @@ CHANNEL_EXTRACTORS = {
 # =============================================================================
 # Dataclasses — the resolved, flat Calibration interface
 # =============================================================================
+
+@dataclass
+class MeasureLineConfig:
+    """Per-skin measure-line detection tunables (Layer 3 consumes these).
+
+    The Layer 3 detector looks for a thin, mid-grey, near-full-width band by
+    stacking per-lane projections and counting lit lanes per row. Each field
+    here corresponds to one filter:
+
+    * min_brightness : a lane row must exceed this to count as "lit"
+    * max_brightness : reject note-bright bands (~218 on the ez2on skin)
+    * max_thickness  : reject thicker bands (a 22px note chord; the bar; glow)
+    * lane_slack     : allow this many lanes to miss the coincidence (occlusion
+                       or split-frame), so the gate is key_count - lane_slack
+    """
+    channel: str
+    min_brightness: float
+    max_brightness: float
+    max_thickness: int
+    lane_slack: int
+
 
 @dataclass
 class LaneCalibration:
@@ -119,8 +140,6 @@ class Calibration:
 
     # --- matching geometry ---------------------------------------------------
     roi_x_margin: int
-    nms_distance_y: int
-    regular_note_pairing_max_y: int
     tail_search_y_max: int
 
     # --- beat indicator ------------------------------------------------------
@@ -129,14 +148,15 @@ class Calibration:
     beat_detection_method: str
     beat_diff_threshold: float
 
-    # --- measure line (마디선) -----------------------------------------------
+    # --- measure line -------------------------------------------------------
     measure_line_x_range: tuple[int, int]   # (field_left, field_right) full playfield width
     measure_line_channel: str               # key into CHANNEL_EXTRACTORS
-    measure_line_threshold: float           # row-mean brightness gate (0-255)
+    measure_line: MeasureLineConfig         # Layer 3 detector tunables
 
     # --- measurements --------------------------------------------------------
     pixels_per_frame: float
     frames_per_traverse: int
+    min_longnote_px: int                    # head-tail gap below this -> tap
 
     def lane_detection_roi(self, frame: np.ndarray) -> list[np.ndarray]:
         """Convenience: tight detection ROIs for every lane (Layer 2 helper)."""
@@ -156,7 +176,12 @@ class Calibration:
         print(f"  beat ROI   : {self.beat_roi}  ch={self.beat_channel} "
               f"{self.beat_detection_method} thr={self.beat_diff_threshold}")
         print(f"  measure ln : x{list(self.measure_line_x_range)}  "
-              f"ch={self.measure_line_channel}  thr={self.measure_line_threshold}")
+              f"ch={self.measure_line_channel}  "
+              f"bright=[{self.measure_line.min_brightness},"
+              f"{self.measure_line.max_brightness}]  "
+              f"max_thick={self.measure_line.max_thickness}  "
+              f"slack={self.measure_line.lane_slack}")
+        print(f"  min_ln_px  : {self.min_longnote_px}")
         print(f"  lanes ({self.key_count}):")
         for ln in self.lanes:
             print(f"    L{ln.index+1}: {ln.color:5s} det_x{list(ln.x_range)} "
@@ -348,6 +373,13 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         raise CalibrationError(
             f"unknown measure_line channel '{ml_channel}' "
             f"(valid: {sorted(CHANNEL_EXTRACTORS)})")
+    measure_line_cfg = MeasureLineConfig(
+        channel=ml_channel,
+        min_brightness=float(ml_skin["min_brightness"]),
+        max_brightness=float(ml_skin["max_brightness"]),
+        max_thickness=int(ml_skin["max_thickness"]),
+        lane_slack=int(ml_skin["lane_slack"]),
+    )
 
     return Calibration(
         skin_name=skin_name,
@@ -371,8 +403,6 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         key_count=key_count,
         lanes=lanes,
         roi_x_margin=margin,
-        nms_distance_y=mt["nms_distance_y"],
-        regular_note_pairing_max_y=mt["regular_note_pairing_max_y"],
         tail_search_y_max=mt["tail_search_y_max"],
         beat_roi=tuple(bi_geom),
         beat_channel=bi_skin["channel"],
@@ -380,9 +410,10 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         beat_diff_threshold=float(bi_skin["diff_threshold"]),
         measure_line_x_range=(field_left, field_right),
         measure_line_channel=ml_channel,
-        measure_line_threshold=float(ml_skin["threshold"]),
+        measure_line=measure_line_cfg,
         pixels_per_frame=float(meas["pixels_per_frame"]),
         frames_per_traverse=int(meas["frames_per_traverse"]),
+        min_longnote_px=int(meas["min_longnote_px"]),
     )
 
 
@@ -412,6 +443,6 @@ def _verify_video(path: Path, exp_w: int, exp_h: int, exp_fps: float) -> None:
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
+    path = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
     cal = resolve_calibration(path)
     cal.summary()

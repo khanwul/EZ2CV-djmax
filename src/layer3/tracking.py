@@ -1,0 +1,468 @@
+"""
+EZ2CV — Layer 3 / tracking : scroll speed + NoteTracker + longnote pairing
+===============================================================================
+Stages 1 & 2 detect typed edges PER FRAME. A note is visible for ~25 frames, so
+it is detected ~25 times. This module collapses those repeated detections into
+ONE note, finds the sub-frame moment each note crosses the judgment line, and
+pairs longnote head+tail edges into single longnote events.
+
+Three pieces
+------------
+* ScrollSpeedEstimator — global adaptive px/frame, smoothed by an outlier-
+  trimmed mean over a short window. SV is global, so it aggregates ALL lanes.
+* NoteTracker — associates each frame's Stage 2 matches with tracked edges and
+  emits ONE TriggerEvent per edge when it crosses the judgment line.
+* LongnoteStateMachine — pairs the ordered TriggerEvent stream into RawNotes.
+
+Real-video hazards this tracker is built around
+------------------------------------------------
+1. CAPTURE STUTTER. The recording repeats a frame every ~8 frames, so a note
+   appears to move 0px then ~2x next frame. Fix: a DIRECTIONAL, stutter-aware
+   gate — notes only move DOWN, by 0..~2*speed per frame.
+2. LONGNOTE HEAD HOLD. A longnote head's template stops matching for ~10
+   frames as it is "caught" at the line, then reappears HELD just past it.
+   Fix: an un-emitted *lnhead* edge near the trigger gets an extended grace
+   period so the post-gap (held) detection bridges the gap and the crossing
+   interpolates. Grace is lnhead-ONLY: a tap or tail just vanishes, so letting
+   it linger would make it steal a later note's detections.
+3. MISSED POST-TRIGGER FRAME. If the stutter eats the one frame a tap is
+   visible past the line, its crossing is EXTRAPOLATED from the global speed.
+
+Output: RawNote objects, ms-based. Tick conversion / snapping is Layer 4.
+"""
+
+from __future__ import annotations
+
+import sys
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import numpy as np
+
+from layer1.calibration import Calibration
+from layer3.stage2 import Stage2Result
+
+
+# =============================================================================
+# Data structures
+# =============================================================================
+
+@dataclass
+class TrackedEdge:
+    """One physical edge (note / lnhead / lntail) followed across frames."""
+    id: int
+    lane: int
+    type: str
+    trajectory: list                       # [(frame, y_top, score), ...]
+    last_seen: int
+    trigger_emitted: bool = False
+
+    @property
+    def last_y(self) -> int:
+        return self.trajectory[-1][1]
+
+
+@dataclass
+class TriggerEvent:
+    """An edge crossing the judgment line."""
+    lane: int
+    type: str                  # "note" | "lnhead" | "lntail"
+    cross_frame: float         # fractional frame index of the crossing
+    ms: float                  # cross time in milliseconds
+    score: float               # raw template-match strength
+    extrapolated: bool = False
+    confidence: float = 1.0    # composite reliability (see _trigger_confidence)
+
+
+@dataclass
+class RawNote:
+    """A finished, ms-based note. Layer 4 converts these to ticks."""
+    lane: int
+    type: str                  # "tap" | "longnote"
+    trigger_ms: float          # tap hit, or longnote head (start)
+    end_ms: float | None       # longnote tail (end); None for taps
+    color: str
+    confidence: float
+    extrapolated: bool = False
+
+
+# =============================================================================
+# Scroll speed
+# =============================================================================
+
+class ScrollSpeedEstimator:
+    """Global adaptive scroll-speed estimate in px/frame.
+
+    Uses an outlier-trimmed MEAN over a pooled sample window — NOT a median.
+    The capture stutters bimodally (a repeated frame gives 0px, the catch-up
+    frame gives ~2x); in stretches where every other frame repeats, the
+    displacement distribution is ~50/50 between 0 and 2x and its median
+    collapses to 0. The mean correctly averages 0 and 2x back to the true
+    speed. Implausible values (mis-tracks) are trimmed before averaging.
+    """
+
+    # plausible per-frame descent: 0 (stutter repeat) .. fast burst + catch-up
+    _LO, _HI = -5.0, 160.0
+
+    def __init__(self, cal: Calibration, sample_window: int = 48):
+        self._samples = deque(maxlen=sample_window)
+        self._speed = cal.pixels_per_frame
+
+    def update(self, edges) -> None:
+        for e in edges:
+            if len(e.trajectory) >= 2:
+                (fa, ya, _), (fb, yb, _) = e.trajectory[-2], e.trajectory[-1]
+                if fb > fa:
+                    d = (yb - ya) / (fb - fa)
+                    if self._LO <= d <= self._HI:    # trim mis-track outliers
+                        self._samples.append(d)
+        if self._samples:
+            self._speed = float(np.mean(self._samples))
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+
+# =============================================================================
+# NoteTracker
+# =============================================================================
+
+def _trigger_confidence(traj_len: int, projection_ratio: float,
+                        match_score: float) -> float:
+    """Composite detection-reliability score in [0, 1].
+
+    The bare template-match score is a poor reliability signal: a real note
+    nearly always saturates it (~0.97). This score instead reflects how
+    solidly the note was *tracked*:
+
+      length      a note observed over many frames is reliable; one tracked
+                  only ~2-4 frames (the bare minimum) is shaky. Reaches full
+                  marks by 10 frames -- well under the ~25-frame norm of even
+                  the fastest song tested.
+      projection  an interpolated crossing (ratio 0) is bracketed by real
+                  observations; an extrapolated one is projected forward, and
+                  a longer projection (ratio -> 1) is a longer guess.
+      match       the raw template-match strength, kept as a minor term.
+    """
+    length = max(0.0, min(1.0, (traj_len - 1) / 9.0))
+    projection = 1.0 - 0.5 * max(0.0, min(1.0, projection_ratio))
+    return length * projection * match_score
+
+
+class NoteTracker:
+    """Per-lane temporal dedup + trigger-crossing detection."""
+
+    def __init__(self, cal: Calibration, *,
+                 max_stale_frames: int = 4,
+                 max_stale_grace: int = 15,
+                 up_jitter_px: float = 6.0,
+                 down_jitter_px: float = 16.0):
+        """
+        max_stale_frames : drop a normal edge unseen this many frames.
+        max_stale_grace  : an un-emitted *lnhead* edge near the trigger is kept
+                           this many frames so the held detection can bridge.
+        up/down_jitter_px : slack on the directional association gate.
+        """
+        self.cal = cal
+        self.trigger = cal.trigger_template_y_top
+        self.fps = cal.fps
+        self.max_stale = max_stale_frames
+        self.max_grace = max_stale_grace
+        self.up_jitter = up_jitter_px
+        self.down_jitter = down_jitter_px
+
+        self.speed = ScrollSpeedEstimator(cal)
+        self._lanes = {ln.index: [] for ln in cal.lanes}
+        self._next_id = 0
+
+    # ------------------------------------------------------------------ #
+    def step(self, frame_index: int, s2_results):
+        """Advance the tracker one frame; return any new trigger crossings."""
+        speed = self.speed.speed                  # speed from the PREVIOUS frame
+        events = []
+
+        for res in s2_results:
+            edges = self._lanes[res.lane_index]
+            free = list(res.matches)
+
+            # --- associate: build all valid (dist, edge, match) pairs, then
+            #     assign nearest-first so the best edge wins each match -------
+            # Association is PROXIMITY-ONLY: a per-frame type misclassification
+            # (note <-> lnhead) would otherwise spawn a parallel same-position
+            # edge of the new type. merge_duplicate_triggers keys on
+            # (lane, type) and cannot collapse those, so one physical note
+            # would split into a tap and a longnote open. The edge keeps the
+            # type it was created with; the trajectory still tracks position.
+            pairs = []
+            for e in edges:
+                if e.last_seen == frame_index:
+                    continue
+                for m in free:
+                    d = self._gate_dist(e, m, frame_index, speed)
+                    if d is not None:
+                        pairs.append((d, e, m))
+            pairs.sort(key=lambda p: p[0])
+            used_e, used_m = set(), set()
+            for d, e, m in pairs:
+                if id(e) in used_e or id(m) in used_m:
+                    continue
+                e.trajectory.append((frame_index, m.y_top, m.score))
+                e.last_seen = frame_index
+                used_e.add(id(e))
+                used_m.add(id(m))
+
+            # --- unassociated matches -> new edges -------------------------
+            for m in free:
+                if id(m) in used_m:
+                    continue
+                edges.append(TrackedEdge(
+                    id=self._next_id, lane=res.lane_index, type=m.type,
+                    trajectory=[(frame_index, m.y_top, m.score)],
+                    last_seen=frame_index))
+                self._next_id += 1
+
+            # --- trigger crossings (interpolation) ------------------------
+            for e in edges:
+                if e.trigger_emitted:
+                    continue
+                ev = self._check_trigger(e)
+                if ev is not None:
+                    e.trigger_emitted = True
+                    events.append(ev)
+
+            # --- prune; extrapolate near-trigger un-emitted edges ---------
+            survivors = []
+            for e in edges:
+                if self._keep(e, frame_index, speed):
+                    survivors.append(e)
+                elif not e.trigger_emitted:
+                    ev = self._extrapolate_trigger(e)
+                    if ev is not None:
+                        events.append(ev)
+            self._lanes[res.lane_index] = survivors
+
+        # --- refresh global speed -----------------------------------------
+        # Only DESCENDING edges (still above the judgment line) count. A held
+        # longnote head sits motionless past the line; including its 0-px
+        # "displacement" every frame would drag the median speed down, narrow
+        # the gate, and fragment fast notes.
+        moving = [e for lst in self._lanes.values() for e in lst
+                  if e.trajectory[-1][1] < self.trigger]
+        self.speed.update(moving)
+        return events
+
+    # ------------------------------------------------------------------ #
+    def flush(self):
+        """End-of-video: extrapolate any un-emitted edge still near the line."""
+        events = []
+        for edges in self._lanes.values():
+            for e in edges:
+                if not e.trigger_emitted:
+                    ev = self._extrapolate_trigger(e)
+                    if ev is not None:
+                        events.append(ev)
+        return events
+
+    # ------------------------------------------------------------------ #
+    # internals
+    # ------------------------------------------------------------------ #
+    def _gate_dist(self, e, m, frame_index, speed):
+        """Distance to prediction if m is inside e's directional gate, else None.
+
+        Notes only descend. For a recently-seen edge the note kept moving, so
+        the gate reaches last_y + elapsed*speed + one stutter step. For a
+        grace-kept lnhead (stale beyond max_stale) the head is being HELD near
+        the line, so its continuation can only be near the trigger — the gate
+        is clamped there, which stops it grabbing a far-away later note.
+        """
+        elapsed = frame_index - e.last_seen
+        lo = e.last_y - self.up_jitter
+        if elapsed <= self.max_stale:
+            hi = e.last_y + elapsed * speed + speed + self.down_jitter
+            pred = e.last_y + elapsed * speed
+        else:                                  # grace-kept lnhead, held at line
+            hi = self.trigger + self.cal.note_height + self.down_jitter
+            pred = float(self.trigger)
+        if lo <= m.y_top <= hi:
+            return abs(m.y_top - pred)
+        return None
+
+    def _keep(self, e, frame_index, speed) -> bool:
+        """Whether an edge survives this frame's prune."""
+        if frame_index - e.last_seen <= self.max_stale:
+            return True
+        # extended grace ONLY for a longnote head: it stops matching for ~10
+        # frames as it is caught at the line, then reappears HELD. A tap or
+        # tail just vanishes — letting it linger would steal a later note.
+        if (e.type == "lnhead" and not e.trigger_emitted
+                and e.last_y >= self.trigger - 3 * speed
+                and e.last_y <= self.trigger + self.cal.note_height
+                and frame_index - e.last_seen <= self.max_grace):
+            return True
+        return False
+
+    def _check_trigger(self, e):
+        """Emit if the trajectory straddles the trigger line (interpolation)."""
+        traj = e.trajectory
+        for i in range(len(traj) - 1):
+            fa, ya, sa = traj[i]
+            fb, yb, sb = traj[i + 1]
+            if ya < self.trigger <= yb and yb != ya:
+                frac = (self.trigger - ya) / (yb - ya)
+                cf = fa + frac * (fb - fa)
+                match = (sa + sb) / 2
+                conf = _trigger_confidence(len(traj), 0.0, match)
+                return TriggerEvent(e.lane, e.type, cf,
+                                    cf / self.fps * 1000.0, match,
+                                    confidence=conf)
+        return None
+
+    def _extrapolate_trigger(self, e):
+        """Fallback: project a near-miss edge forward to the trigger line.
+
+        Uses the GLOBAL speed (robust, trimmed-mean smoothed) rather than the
+        edge's own last segment, which the stutter can corrupt.
+        """
+        if len(e.trajectory) < 2:
+            return None
+        fb, yb, sb = e.trajectory[-1]
+        if yb >= self.trigger:
+            return None
+        sp = self.speed.speed
+        if sp <= 0 or (self.trigger - yb) > 3 * sp:    # died too far short
+            return None
+        cf = fb + (self.trigger - yb) / sp
+        proj_ratio = (self.trigger - yb) / (3.0 * sp)  # 0 = clean .. 1 = max guess
+        conf = _trigger_confidence(len(e.trajectory), proj_ratio, sb)
+        return TriggerEvent(e.lane, e.type, cf,
+                            cf / self.fps * 1000.0, sb,
+                            extrapolated=True, confidence=conf)
+
+
+# =============================================================================
+# Longnote state machine
+# =============================================================================
+
+class LongnoteStateMachine:
+    """Pairs ordered TriggerEvents into RawNotes (per lane)."""
+
+    def __init__(self, cal: Calibration):
+        self.cal = cal
+        self._colors = {ln.index: ln.color for ln in cal.lanes}
+        # a "longnote" whose head->tail gap is under min_longnote_px is a tap
+        self._min_ln_ms = (cal.min_longnote_px
+                           / cal.pixels_per_frame / cal.fps * 1000.0)
+        self._open = {}                              # lane -> pending lnhead
+        self.orphan_tails = 0                        # diagnostics
+
+    def feed(self, ev: TriggerEvent):
+        """Consume one TriggerEvent; return a RawNote when one completes."""
+        color = self._colors[ev.lane]
+
+        if ev.type == "note":
+            return RawNote(ev.lane, "tap", ev.ms, None, color, ev.confidence,
+                           extrapolated=ev.extrapolated)
+
+        if ev.type == "lnhead":
+            self._open[ev.lane] = ev                 # longnote opens
+            return None
+
+        if ev.type == "lntail":
+            head = self._open.pop(ev.lane, None)
+            if head is None:
+                self.orphan_tails += 1               # tail with no head: drop
+                return None
+            extrap = head.extrapolated or ev.extrapolated
+            conf = min(head.confidence, ev.confidence)   # weakest end governs
+            if ev.ms - head.ms < self._min_ln_ms:    # too short -> it's a tap
+                return RawNote(ev.lane, "tap", head.ms, None, color,
+                               conf, extrapolated=extrap)
+            return RawNote(ev.lane, "longnote", head.ms, ev.ms, color,
+                           conf, extrapolated=extrap)
+        return None
+
+    def flush(self):
+        """Longnotes whose tail was never seen — emit head-only as a tap."""
+        out = []
+        for lane, head in self._open.items():
+            out.append(RawNote(lane, "tap", head.ms, None,
+                               self._colors[lane], head.confidence,
+                               extrapolated=head.extrapolated))
+        self._open.clear()
+        return out
+
+
+# =============================================================================
+# Duplicate-trigger merge
+# =============================================================================
+
+def merge_duplicate_triggers(events, merge_window_ms: float = 6.0):
+    """Drop spurious double-detections from a TriggerEvent stream.
+
+    A single physical note occasionally spawns two tracked edges that each
+    emit a trigger (e.g. a transient secondary template match -- the parasitic
+    edge is short-lived and so scores low on `_trigger_confidence`). Two
+    triggers in the same lane and of the same type within `merge_window_ms`
+    are one note: keep the more confident one. The window sits well below the
+    tightest real spacing (a 1/64 note at 300 BPM is 12.5 ms apart), so
+    genuine consecutive notes are never merged.
+    """
+    kept: list = []
+    last: dict = {}                       # (lane, type) -> index into `kept`
+    for ev in sorted(events, key=lambda e: e.ms):
+        key = (ev.lane, ev.type)
+        j = last.get(key)
+        if j is not None and ev.ms - kept[j].ms <= merge_window_ms:
+            if ev.confidence > kept[j].confidence:    # duplicate: keep the best
+                kept[j] = ev
+        else:
+            last[key] = len(kept)
+            kept.append(ev)
+    return kept
+
+
+# =============================================================================
+# CLI: python tracking.py [config/song.toml]  — runs the full Layer 3 pipeline
+# =============================================================================
+
+if __name__ == "__main__":
+    from layer2.preprocessor import Preprocessor
+    from layer3.stage1 import ProjectionDetector
+    from layer3.stage2 import TemplateMatcher
+
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    pre = Preprocessor.from_config(cfg)
+    s1 = ProjectionDetector(pre.cal)
+    s2 = TemplateMatcher(pre.cal)
+    tracker = NoteTracker(pre.cal)
+    lnsm = LongnoteStateMachine(pre.cal)
+
+    notes = []
+    for pf in pre:
+        s2r = s2.match_frame(pf, s1.detect_frame(pf))
+        for ev in sorted(tracker.step(pf.frame_index, s2r), key=lambda e: e.ms):
+            n = lnsm.feed(ev)
+            if n:
+                notes.append(n)
+    for ev in sorted(tracker.flush(), key=lambda e: e.ms):
+        n = lnsm.feed(ev)
+        if n:
+            notes.append(n)
+    notes.extend(lnsm.flush())
+    notes.sort(key=lambda n: (n.trigger_ms, n.lane))
+
+    taps = sum(1 for n in notes if n.type == "tap")
+    lns = sum(1 for n in notes if n.type == "longnote")
+    extr = sum(1 for n in notes if n.extrapolated)
+    print(f"=== Layer 3 raw output: {len(notes)} notes "
+          f"({taps} tap, {lns} longnote; {extr} extrapolated) ===")
+    print(f"orphan tails dropped: {lnsm.orphan_tails}\n")
+    for n in notes:
+        dur = f" dur={n.end_ms - n.trigger_ms:6.1f}ms" if n.end_ms else ""
+        flag = " [extrap]" if n.extrapolated else ""
+        print(f"  {n.trigger_ms:8.1f}ms  L{n.lane+1}  {n.type:8s} "
+              f"{n.color:5s} conf={n.confidence:.3f}{dur}{flag}")
