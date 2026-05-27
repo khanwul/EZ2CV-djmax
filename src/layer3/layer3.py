@@ -169,8 +169,7 @@ class Layer3Pipeline:
             s2r = s2.match_frame(pf, s1r)
             events.extend(tracker.step(pf.frame_index, s2r))
             # bar-line path (reuses the note path's Stage 1 projections)
-            barline_events.extend(mlt.step(
-                pf.frame_index, mld.detect_frame(s1r, pf.measure_roi)))
+            barline_events.extend(mlt.step(pf.frame_index, mld.detect_frame(s1r)))
             # beat path (BeatDetector internally records pf.beat_roi.mean())
             beat.step(pf)
             if progress and total and frame_count % 1000 == 0:

@@ -101,55 +101,18 @@ class BarlineEvent:
 # Detector
 # =============================================================================
 
-COINCIDENCE_METHODS = ("lit", "in_window")
-STRENGTH_METHODS    = ("lane_mean", "lane_median", "column_median")
-
-
 class MeasureLineDetector:
     """Per-frame measure-line detector. Stateless across frames.
 
     Consumes the per-lane Stage 1 results (for their `projection` arrays) and
     reports any thin, mid-grey, full-width band.
-
-    Two algorithm knobs (orthogonal — see the design discussion in
-    ``doc/measure-line-detection.md`` and the inline notes below):
-
-    ``coincidence_method`` — how a row qualifies as a CANDIDATE thin band:
-      * ``"lit"``       — count lanes whose row-mean exceeds min_brightness.
-                          Original behaviour. A note-bright lane counts as lit
-                          (raising coincidence but also dragging strength up).
-      * ``"in_window"`` — count lanes whose row-mean is INSIDE
-                          [min_brightness, max_brightness]. A lane occluded by
-                          a note no longer counts toward coincidence, so the
-                          gate isn't "spent" by note-bright lanes.
-
-    ``strength_method`` — how to score the candidate's brightness against the
-    [min_brightness, max_brightness] mid-grey window:
-      * ``"lane_mean"``     — mean over all (lane, row) cells in the band.
-                              Original behaviour. ONE note-bright lane can drag
-                              the whole strength past max_brightness.
-      * ``"lane_median"``   — median across the 5 per-lane row-means of the
-                              band. Robust to 1-2 note-occluded lanes.
-      * ``"column_median"`` — median over per-column means inside the band,
-                              computed on the FULL-WIDTH `measure_roi`
-                              (~5*lane_width samples per band, vs 5 for the
-                              lane variants). Robust to chord-occlusion at the
-                              measure-line row provided notes don't fill the
-                              lane width edge-to-edge.
-
-    Defaults are the baseline (`lit` + `lane_mean`) — this preserves the
-    pre-validation behaviour as the production path. Pass kwargs to A/B
-    against alternative coincidence/strength rules; the validation harness in
-    the CLI (`--compare`) sweeps the full grid.
     """
 
     def __init__(self, cal: Calibration, *,
                  min_brightness: float | None = None,
                  max_brightness: float | None = None,
                  max_thickness: int | None = None,
-                 min_lanes: int | None = None,
-                 coincidence_method: str = "lit",
-                 strength_method: str = "lane_mean"):
+                 min_lanes: int | None = None):
         """All tunables resolve from skin.toml [measure_line] via
         ``cal.measure_line`` (see that section for the rationale of each value).
         Pass a kwarg only to OVERRIDE the config — handy for a parameter sweep.
@@ -158,12 +121,6 @@ class MeasureLineDetector:
         must span (almost) every lane, with `lane_slack` lanes of give for a
         split frame or a note-occluded lane.
         """
-        if coincidence_method not in COINCIDENCE_METHODS:
-            raise ValueError(f"coincidence_method must be one of "
-                             f"{COINCIDENCE_METHODS}, got {coincidence_method!r}")
-        if strength_method not in STRENGTH_METHODS:
-            raise ValueError(f"strength_method must be one of "
-                             f"{STRENGTH_METHODS}, got {strength_method!r}")
         ml = cal.measure_line
         self.cal = cal
         self.min_brightness = (ml.min_brightness if min_brightness is None
@@ -172,52 +129,20 @@ class MeasureLineDetector:
                                else max_brightness)
         self.max_thickness = (ml.max_thickness if max_thickness is None
                               else max_thickness)
-        # min_lanes default depends on the coincidence semantics:
-        #   * "lit"       — note-bright lanes count too, so the line still
-        #                   reads (key_count - lane_slack)/key_count lanes lit.
-        #   * "in_window" — note-bright lanes DROP OUT of the count, so a chord
-        #                   of N notes on the measure-line row consumes N of
-        #                   the available lanes. Use a majority gate
-        #                   (ceil(key_count/2)) so up to floor(key_count/2)
-        #                   lanes can be note-occluded and the candidate row
-        #                   still passes. Without this auto-relax in_window is
-        #                   strictly worse than lit at the same min_lanes.
-        if min_lanes is None:
-            if coincidence_method == "in_window":
-                self.min_lanes = max(2, (cal.key_count + 1) // 2)
-            else:
-                self.min_lanes = max(2, cal.key_count - ml.lane_slack)
-        else:
-            self.min_lanes = min_lanes
-        self.coincidence_method = coincidence_method
-        self.strength_method = strength_method
+        self.min_lanes = (max(2, cal.key_count - ml.lane_slack)
+                          if min_lanes is None else min_lanes)
 
     # ------------------------------------------------------------------ #
-    def detect_frame(self, s1_results: list[Stage1Result],
-                     measure_roi: np.ndarray | None = None
+    def detect_frame(self, s1_results: list[Stage1Result]
                      ) -> list[MeasureLineDetection]:
-        """Find every measure-line band in one frame's Stage 1 output.
-
-        ``measure_roi`` is the full-playfield-width single-channel crop from
-        ``PreprocessedFrame.measure_roi``. Required when
-        ``strength_method == "column_median"``; ignored otherwise. Its y axis
-        must match the Stage 1 projection y axis (both are sliced at
-        playfield_top:playfield_bottom — Layer 2 guarantees this).
-        """
+        """Find every measure-line band in one frame's Stage 1 output."""
         if not s1_results:
             return []
-        if self.strength_method == "column_median" and measure_roi is None:
-            raise ValueError("strength_method='column_median' requires "
-                             "measure_roi (pass pf.measure_roi)")
 
         # per-lane row-mean projections, stacked: (n_lanes, H)
         projs = np.stack([r.projection for r in s1_results])
-        if self.coincidence_method == "lit":
-            qualifies = projs > self.min_brightness        # (n_lanes, H)
-        else:  # in_window — note-bright lanes are excluded from the count
-            qualifies = ((projs >= self.min_brightness) &
-                         (projs <= self.max_brightness))
-        coincidence = qualifies.sum(axis=0)                # (H,) lanes / row
+        lit = projs > self.min_brightness                  # (n_lanes, H)
+        coincidence = lit.sum(axis=0)                      # (H,) lanes lit / row
         full_width = coincidence >= self.min_lanes
 
         origin = s1_results[0].roi_y_origin
@@ -227,15 +152,7 @@ class MeasureLineDetector:
         for s, e in _find_runs(full_width):
             if (e - s) > self.max_thickness:
                 continue                                   # too thick -> not a line
-            if self.strength_method == "lane_mean":
-                strength = float(projs[:, s:e].mean())
-            elif self.strength_method == "lane_median":
-                # 5 lane row-means of the band; median picks the mid-grey
-                # lanes even if one or two are dragged up by a note.
-                strength = float(np.median(projs[:, s:e].mean(axis=1)))
-            else:  # column_median — robust to chord-occlusion at this row
-                band = measure_roi[s:e, :]                 # (band_h, field_w)
-                strength = float(np.median(band.mean(axis=0)))
+            strength = float(projs[:, s:e].mean())
             if not (self.min_brightness < strength < self.max_brightness):
                 continue                                   # note-bright -> reject
             out.append(MeasureLineDetection(
@@ -280,30 +197,6 @@ class MeasureLineTracker:
         self.speed = ScrollSpeedEstimator(cal)
         self._lines: list[TrackedLine] = []
         self._next_id = 0
-
-        # Diagnostic counters — incremented as lines move through the tracker.
-        # The 4 `dropped_*` reasons cover every path that loses a line without
-        # emitting a BarlineEvent; their sum equals "lines we saw but lost",
-        # which is the true Layer-3 miss count assuming the detector did see
-        # them (vs. the line never being detected at all — separate counter).
-        self.diagnostics = {
-            "interpolated": 0,           # _check_crossing emitted (line crossed
-                                         # judgment line within trajectory)
-            "extrapolated": 0,           # _extrapolate emitted (projected from
-                                         # last sighting near the line)
-            "recovered_long_traj": 0,    # _extrapolate emitted because of the
-                                         # relaxed (8*sp) gate when traj>=3 —
-                                         # subset of `extrapolated`, would have
-                                         # been dropped_too_far under the
-                                         # strict 3*sp limit. Targets the
-                                         # variable-BPM miss mode (GEHENNA).
-            "dropped_short_traj": 0,     # died with len(trajectory) < 2 — only
-                                         # one sighting, can't project
-            "dropped_too_far": 0,        # died at (line_y - yb) > max_dist*sp
-                                         # even with the relaxed gate
-            "dropped_below_line": 0,     # already past the line, never crossed
-            "dropped_zero_speed": 0,     # speed estimator returned <= 0
-        }
 
     # ------------------------------------------------------------------ #
     def step(self, frame_index: int,
@@ -350,7 +243,6 @@ class MeasureLineTracker:
             if ev is not None:
                 ln.crossed = True
                 events.append(ev)
-                self.diagnostics["interpolated"] += 1
 
         # --- prune; extrapolate near-line un-crossed lines ----------------
         survivors = []
@@ -361,7 +253,6 @@ class MeasureLineTracker:
                 ev = self._extrapolate(ln)
                 if ev is not None:
                     events.append(ev)
-                    self.diagnostics["extrapolated"] += 1
         self._lines = survivors
 
         # --- refresh global speed (only lines still above the line) -------
@@ -378,7 +269,6 @@ class MeasureLineTracker:
                 ev = self._extrapolate(ln)
                 if ev is not None:
                     events.append(ev)
-                    self.diagnostics["extrapolated"] += 1
         self._lines = []
         return events
 
@@ -413,22 +303,6 @@ class MeasureLineTracker:
                 return BarlineEvent(cf, cf / self.fps * 1000.0, (sa + sb) / 2)
         return None
 
-    # Extrapolation distance multipliers (× scroll speed in px/frame). A line
-    # whose last sighting is within `limit * sp` of the judgment line gets
-    # projected forward; further than that we abandon it. The limit relaxes
-    # with trajectory length:
-    #
-    #   * `_EXTRAP_DIST_SHORT` (2 sightings) — strict. A 2-frame trajectory
-    #     could be a noise blob; only trust it if it died right next to the
-    #     line.
-    #   * `_EXTRAP_DIST_LONG`  (3+ sightings) — relaxed. A line tracked for 3+
-    #     frames has confirmed its identity (consistent motion). Extrapolating
-    #     further is justified, and it's the only way to recover the
-    #     variable-BPM miss mode in songs like GEHENNA where slow-scroll
-    #     sections push the strict gate below 1 frame of headroom.
-    _EXTRAP_DIST_SHORT = 3.0
-    _EXTRAP_DIST_LONG  = 8.0
-
     def _extrapolate(self, ln: TrackedLine) -> BarlineEvent | None:
         """Fallback: project a line that vanished into the judgment bar forward.
 
@@ -436,198 +310,48 @@ class MeasureLineTracker:
         crossing and stops being detected as a thin band — exactly the way a
         tap merges with the bar. Project the last sighting forward on the
         global speed, but only if it died within reach of the line.
-
-        Each early-return path bumps a diagnostic counter so the CLI can
-        report WHY measure lines are being lost (single-sighting lines,
-        died-too-far, etc.) — the baseline misses ~30% of true measures
-        and this is the way to localise where they vanish.
         """
         if len(ln.trajectory) < 2:
-            self.diagnostics["dropped_short_traj"] += 1
             return None
         fb, yb, sb = ln.trajectory[-1]
         if yb >= self.line_y:
-            self.diagnostics["dropped_below_line"] += 1
             return None
         sp = self.speed.speed
-        if sp <= 0:
-            self.diagnostics["dropped_zero_speed"] += 1
+        if sp <= 0 or (self.line_y - yb) > 3 * sp:         # died too far short
             return None
-        max_dist_mult = (self._EXTRAP_DIST_LONG if len(ln.trajectory) >= 3
-                         else self._EXTRAP_DIST_SHORT)
-        gap = self.line_y - yb
-        if gap > max_dist_mult * sp:                       # died too far short
-            self.diagnostics["dropped_too_far"] += 1
-            return None
-        if gap > self._EXTRAP_DIST_SHORT * sp:
-            # Made it only because of the relaxed long-trajectory gate; record
-            # for diagnostics so we can attribute recall gains to this change.
-            self.diagnostics["recovered_long_traj"] += 1
-        cf = fb + gap / sp
+        cf = fb + (self.line_y - yb) / sp
         return BarlineEvent(cf, cf / self.fps * 1000.0, sb, extrapolated=True)
 
 
 # =============================================================================
-# CLI: python measureline.py [config/song.toml] [--compare | --coincidence X --strength Y]
+# CLI: python measureline.py [config/song.toml]
 # =============================================================================
-
-def _run_one(pre, s1, *, coincidence_method: str, strength_method: str
-             ) -> tuple[list[BarlineEvent], dict]:
-    """Run a fresh detector+tracker pass against an already-loaded video.
-
-    Returns (barlines, tracker_diagnostics). The diagnostics dict explains
-    where lost measure lines went — see MeasureLineTracker.diagnostics.
-
-    Decodes the video once per call — the comparison harness wraps `pre` with
-    a cache so the 4 configs share a single decode.
-    """
-    mld = MeasureLineDetector(pre.cal,
-                              coincidence_method=coincidence_method,
-                              strength_method=strength_method)
-    mlt = MeasureLineTracker(pre.cal)
-    barlines: list[BarlineEvent] = []
-    for pf in pre:
-        s1r = s1.detect_frame(pf)
-        barlines.extend(mlt.step(
-            pf.frame_index, mld.detect_frame(s1r, pf.measure_roi)))
-    barlines.extend(mlt.flush())
-    barlines.sort(key=lambda e: e.cross_frame)
-    return barlines, dict(mlt.diagnostics)
-
-
-def _summarise(barlines: list[BarlineEvent], true_measures: int | None = None
-               ) -> dict:
-    """Return summary stats used by the comparison table.
-
-    `max_gap_ratio = max_interval / median_interval` is the strongest miss
-    indicator on constant-BPM songs: a value near 2.0 means one whole measure
-    was skipped, ~3.0 means two measures, etc. With variable BPM (e.g. GEHENNA
-    111-222, JUSTITIA 80-290) the metric is much noisier — `recall` against
-    a known true measure count is the authoritative score.
-    """
-    n = len(barlines)
-    extr = sum(1 for b in barlines if b.extrapolated)
-    out = {"n": n, "extr": extr, "med": float("nan"),
-           "std": float("nan"), "max": float("nan"),
-           "gap_ratio": float("nan"), "recall": float("nan")}
-    if n >= 2:
-        iv = np.diff([b.cross_frame for b in barlines])
-        med = float(np.median(iv))
-        out["med"] = med
-        out["std"] = float(iv.std())
-        out["max"] = float(iv.max())
-        out["gap_ratio"] = float(iv.max() / med) if med > 0 else float("nan")
-    if true_measures is not None and true_measures > 0:
-        out["recall"] = n / true_measures
-    return out
-
-
-class _CachedPreprocessor:
-    """Decode-once / replay-many wrapper around Preprocessor.
-
-    The benchmark harness reuses the same video across 4 detector configs;
-    PreprocessedFrame objects are pure data so we cache them on the first
-    iteration and replay from memory after. Memory cost is O(frames) but the
-    payload per frame is small (a few small ROIs), and the alternative is 4
-    cv2 decode passes per song.
-    """
-    def __init__(self, pre):
-        self._pre = pre
-        self.cal = pre.cal
-        self._cache: list | None = None
-
-    def __iter__(self):
-        if self._cache is None:
-            self._cache = []
-            for pf in self._pre:
-                self._cache.append(pf)
-                yield pf
-        else:
-            yield from self._cache
-
 
 if __name__ == "__main__":
     from layer2.preprocessor import Preprocessor
     from layer3.stage1 import ProjectionDetector
 
-    args = sys.argv[1:]
-    cfg = "config/Dream Walker.toml"
-    compare = False
-    coincidence = "lit"
-    strength = "lane_mean"
-    true_measures: int | None = None
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a == "--compare":
-            compare = True
-        elif a == "--coincidence":
-            i += 1; coincidence = args[i]
-        elif a == "--strength":
-            i += 1; strength = args[i]
-        elif a == "--true-measures":
-            i += 1; true_measures = int(args[i])
-        elif not a.startswith("--"):
-            cfg = a
-        i += 1
-
-    pre = _CachedPreprocessor(Preprocessor.from_config(cfg))
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    pre = Preprocessor.from_config(cfg)
     s1 = ProjectionDetector(pre.cal)
+    mld = MeasureLineDetector(pre.cal)
+    mlt = MeasureLineTracker(pre.cal)
 
-    def _fmt_diag(d: dict) -> str:
-        return (f"interp={d['interpolated']:>3}  "
-                f"extr={d['extrapolated']:>3}  "
-                f"recov={d['recovered_long_traj']:>3}  "
-                f"short={d['dropped_short_traj']:>3}  "
-                f"far={d['dropped_too_far']:>3}  "
-                f"below={d['dropped_below_line']:>3}  "
-                f"sp0={d['dropped_zero_speed']:>3}")
+    barlines: list[BarlineEvent] = []
+    for pf in pre:
+        s1r = s1.detect_frame(pf)
+        barlines.extend(mlt.step(pf.frame_index, mld.detect_frame(s1r)))
+    barlines.extend(mlt.flush())
+    barlines.sort(key=lambda e: e.cross_frame)
 
-    if compare:
-        configs = [
-            ("baseline",  "lit",       "lane_mean"),
-            ("sol12",     "in_window", "lane_median"),
-            ("sol123",    "in_window", "column_median"),
-            ("sol3-only", "lit",       "column_median"),
-        ]
-        print(f"=== {cfg} ===")
-        if true_measures is not None:
-            print(f"true measures: {true_measures}")
-        header = (f"{'config':<10}  {'coin':<10}  {'strength':<14}  "
-                  f"{'N':>4}  {'recall':>7}  "
-                  f"{'interp':>6}  {'extr':>4}  {'recov':>5}  "
-                  f"{'short':>5}  {'far':>4}  "
-                  f"{'below':>5}  {'sp0':>3}")
-        print(header)
-        for label, c, sgy in configs:
-            barlines, diag = _run_one(pre, s1, coincidence_method=c,
-                                      strength_method=sgy)
-            st = _summarise(barlines, true_measures=true_measures)
-            recall_s = (f"{st['recall']*100:>6.1f}%" if true_measures
-                        else "    —  ")
-            print(f"{label:<10}  {c:<10}  {sgy:<14}  "
-                  f"{st['n']:>4}  {recall_s:>7}  "
-                  f"{diag['interpolated']:>6}  {diag['extrapolated']:>4}  "
-                  f"{diag['recovered_long_traj']:>5}  "
-                  f"{diag['dropped_short_traj']:>5}  "
-                  f"{diag['dropped_too_far']:>4}  "
-                  f"{diag['dropped_below_line']:>5}  "
-                  f"{diag['dropped_zero_speed']:>3}")
-        sys.exit(0)
-
-    # single-config mode
-    barlines, diag = _run_one(pre, s1, coincidence_method=coincidence,
-                              strength_method=strength)
-    st = _summarise(barlines, true_measures=true_measures)
-    print(f"=== Layer 3 measure-line detection: {st['n']} bar lines "
-          f"(coincidence={coincidence}, strength={strength}) ===")
-    if true_measures is not None:
-        print(f"recall vs true ({true_measures}): {st['recall']*100:.1f}%")
-    if st['n'] >= 2:
-        print(f"interval (frames): median={st['med']:.1f}  "
-              f"std={st['std']:.2f}  max={st['max']:.1f}  "
-              f"gap_ratio={st['gap_ratio']:.2f}")
-    print(f"tracker: {_fmt_diag(diag)}")
+    print(f"=== Layer 3 measure-line detection: {len(barlines)} bar lines ===")
+    if len(barlines) >= 2:
+        iv = np.diff([b.cross_frame for b in barlines])
+        extr = sum(1 for b in barlines if b.extrapolated)
+        print(f"interval (frames): median={np.median(iv):.1f}  "
+              f"mean={iv.mean():.2f}  std={iv.std():.2f}  "
+              f"min={iv.min():.1f}  max={iv.max():.1f}")
+        print(f"extrapolated crossings: {extr}/{len(barlines)}")
     print(f"\nfirst 8 bar lines:")
     for b in barlines[:8]:
         flag = " [extrap]" if b.extrapolated else ""
