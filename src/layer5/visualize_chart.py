@@ -10,7 +10,7 @@ Layout
 
 CLI:
     uv run python src/layer5/visualize_chart.py [out/<song>/chart.json]
-    # default: out/Dream Walker/chart.json
+    # default: out/song/chart.json
 """
 
 from __future__ import annotations
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     if len(sys.argv) >= 2:
         chart_path = Path(sys.argv[1])
     else:
-        chart_path = Path("out/Dream Walker/chart.json")
+        chart_path = Path("out/song/chart.json")
     if not chart_path.exists():
         raise SystemExit(f"chart not found: {chart_path}")
 

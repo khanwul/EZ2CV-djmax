@@ -240,7 +240,7 @@ if __name__ == "__main__":
     from layer3 import Layer3Pipeline
     from layer4.bpm_estimator import build_tick_clock
 
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     l3 = Layer3Pipeline.from_config(cfg).run(progress=False)
     if not l3.barlines:
         print("no barlines detected"); raise SystemExit(0)

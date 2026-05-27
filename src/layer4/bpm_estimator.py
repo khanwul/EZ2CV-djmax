@@ -496,7 +496,7 @@ def build_tick_clock(beats: list[BeatEvent], *,
 if __name__ == "__main__":
     from layer3 import Layer3Pipeline
 
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     l3 = Layer3Pipeline.from_config(cfg).run(progress=False)
     window = ((l3.barlines[0].ms, l3.barlines[-1].ms)
               if l3.barlines else None)

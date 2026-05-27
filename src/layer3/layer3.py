@@ -209,7 +209,7 @@ if __name__ == "__main__":
     import sys
     import time
 
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     t0 = time.time()
     pipeline = Layer3Pipeline.from_config(cfg)
     result = pipeline.run()

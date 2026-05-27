@@ -236,7 +236,7 @@ class BeatDetector:
 if __name__ == "__main__":
     from layer2.preprocessor import Preprocessor
 
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     pre = Preprocessor.from_config(cfg)
     det = BeatDetector(pre.cal)
     for pf in pre:

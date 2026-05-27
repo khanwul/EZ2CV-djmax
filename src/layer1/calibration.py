@@ -443,6 +443,6 @@ def _verify_video(path: Path, exp_w: int, exp_h: int, exp_fps: float) -> None:
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    path = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     cal = resolve_calibration(path)
     cal.summary()

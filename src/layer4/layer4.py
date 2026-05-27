@@ -345,7 +345,7 @@ def _build_stats(notes: list[ChartNote],
 if __name__ == "__main__":
     import time
 
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
 
     from layer3 import Layer3Pipeline
     t0 = time.time()

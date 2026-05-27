@@ -228,7 +228,7 @@ if __name__ == "__main__":
 
     from layer3 import Layer3Pipeline
 
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     song = song_name_from_config(cfg)
 
     t0 = time.time()

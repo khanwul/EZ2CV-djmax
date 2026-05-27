@@ -234,7 +234,7 @@ if __name__ == "__main__":
     from layer2.preprocessor import Preprocessor
     from layer3.stage1 import ProjectionDetector
 
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     want = int(sys.argv[2]) if len(sys.argv) > 2 else 7
 
     pre = Preprocessor.from_config(cfg)

@@ -249,7 +249,7 @@ class Preprocessor:
 if __name__ == "__main__":
     import sys, time
 
-    path = sys.argv[1] if len(sys.argv) > 1 else "config/Dream Walker.toml"
+    path = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
     pre = Preprocessor.from_config(path)
     print(f"video      : {pre.cal.video_path}")
     print(f"frame_count: {pre.frame_count}")
