@@ -84,7 +84,7 @@ def run(config_path: str | Path, *,
         If not None, render a Layer 3 overlay mp4. Pass ``""`` for the full
         clip (0..frame_count), or ``"START:END"`` for a custom frame range.
     progress
-        If True, Layer 3 prints a heartbeat every 1000 frames.
+        If True, Layer 3 shows an in-place progress bar during the video pass.
 
     Returns
     -------

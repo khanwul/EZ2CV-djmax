@@ -59,6 +59,15 @@ from layer3.measureline import MeasureLineDetector, MeasureLineTracker, BarlineE
 _EVENT_ORDER = {"lnhead": 0, "note": 1, "lntail": 2}
 
 
+def _print_progress(done: int, total: int, *, width: int = 40) -> None:
+    """Render a single in-place progress bar (overwrites itself via ``\\r``)."""
+    frac = done / total
+    filled = int(width * frac)
+    bar = "█" * filled + "░" * (width - filled)
+    print(f"\r  [{bar}] {frac * 100:5.1f}%  {done}/{total} frames",
+          end="", flush=True)
+
+
 # =============================================================================
 # Result
 # =============================================================================
@@ -168,13 +177,18 @@ class Layer3Pipeline:
             s1r = s1.detect_frame(pf)
             s2r = s2.match_frame(pf, s1r)
             events.extend(tracker.step(pf.frame_index, s2r))
-            # bar-line path (reuses the note path's Stage 1 projections)
-            barline_events.extend(mlt.step(pf.frame_index, mld.detect_frame(s1r)))
+            # bar-line path (own full-width gray ROI, independent of Stage 1)
+            ml_dets = mld.detect_frame(pf.measure_roi, frame_index=pf.frame_index,
+                                       roi_y_origin=pf.roi_y_origin)
+            barline_events.extend(mlt.step(pf.frame_index, ml_dets))
             # beat path (BeatDetector internally records pf.beat_roi.mean())
             beat.step(pf)
-            if progress and total and frame_count % 1000 == 0:
-                print(f"  ... {frame_count}/{total} frames "
-                      f"({frame_count * 100 // total}%)")
+            if progress and total and (frame_count % 30 == 0
+                                       or frame_count == total):
+                _print_progress(frame_count, total)
+        if progress and total:
+            _print_progress(total, total)
+            print()                         # end the in-place bar line
         events.extend(tracker.flush())      # project edges still mid-air
         barline_events.extend(mlt.flush())  # project bar lines still mid-air
         beat.finish()                       # confirm/drop a trailing candidate
