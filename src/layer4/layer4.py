@@ -35,9 +35,9 @@ from layer1.calibration import Calibration
 from layer3 import Layer3Result
 from layer3.tracking import RawNote
 from layer4.tick_clock import BPMSegment, TickClock
-from layer4.bpm_estimator import build_tick_clock
-from layer4.time_sig import (TimeSignature, TimeSigVariant,
-                             estimate_time_signature, barline_ticks)
+from layer4.bpm_estimator_fixed import build_tick_clock
+from layer4.time_sig import TimeSignature, TimeSigVariant, barline_ticks
+from layer4.barline_reconstruct import reconstruct_barlines
 from layer4.quantizer import (SnapResult, snap_with_local_context, snap_length,
                               TRIPLET_DENOMS)
 
@@ -119,10 +119,18 @@ class Layer4Pipeline:
         if len(self.l3.beats) < 2:
             raise RuntimeError("Layer 4 requires at least 2 beats")
 
-        # --- 1. anchor & tick clock ---------------------------------------
-        measure_zero_ms = float(self.l3.barlines[0].ms)
-        active_window = (float(self.l3.barlines[0].ms),
-                         float(self.l3.barlines[-1].ms))
+        # --- 1. beat-phase barline reconstruction -------------------------
+        # Recover a complete, FP-free measure grid (+ global time signature and
+        # variant runs) from the INCOMPLETE Layer 3 barlines plus the robust
+        # POW-LED beats. This runs BEFORE the clock: it is beat-count based and
+        # needs no tick grid, and it gives a cleaned song-start anchor.
+        rec = reconstruct_barlines(self.l3.barlines, self.l3.beats)
+        barlines = rec.barlines
+        global_ts, variants = rec.time_signature, rec.variants
+
+        # --- 2. anchor & tick clock ---------------------------------------
+        measure_zero_ms = float(barlines[0].ms)
+        active_window = (float(barlines[0].ms), float(barlines[-1].ms))
         R = self.cal.tick_resolution
         clock = build_tick_clock(
             self.l3.beats,
@@ -133,9 +141,8 @@ class Layer4Pipeline:
             tick_resolution=R,
         )
 
-        # --- 2. time signature -------------------------------------------
-        global_ts, variants = estimate_time_signature(self.l3.barlines, clock)
-        bl_ticks = barline_ticks(self.l3.barlines, clock, global_ts, variants)
+        # --- 3. barline ticks on the reconstructed (gap-free) grid --------
+        bl_ticks = barline_ticks(barlines, clock, global_ts, variants)
         ticks_per_global_measure = global_ts.ticks_per_measure(R)
 
         # --- 3. notes : raw ticks, then snap ------------------------------
