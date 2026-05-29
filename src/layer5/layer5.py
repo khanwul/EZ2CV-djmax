@@ -3,17 +3,18 @@ EZ2CV — Layer 5 : JSON serialization
 ===============================================================================
 Writes the canonical pipeline products:
 
-  * ``out/<song>/raw.json``    — Layer 3 (ms-based, debug-rich; reproducible)
-  * ``out/<song>/chart.json``  — Layer 4 (tick-based, minimal, external-tool
-                                 friendly)
+  * ``out/<song>/<song>_raw.json``    — Layer 3 (ms-based, debug-rich;
+                                        reproducible)
+  * ``out/<song>/<song>_chart.json``  — Layer 4 (tick-based, minimal,
+                                        external-tool friendly)
 
 Why two files
 -------------
-``raw.json`` carries every digit Layer 3 produced (per-note confidence, the
-``extrapolated`` flag, ms coordinates, beats, barlines). Anyone wanting to
+``<song>_raw.json`` carries every digit Layer 3 produced (per-note confidence,
+the ``extrapolated`` flag, ms coordinates, beats, barlines). Anyone wanting to
 re-run Layer 4 with a different snapping policy reads this file and skips the
-1-Pass entirely. ``chart.json`` strips all derivable / debug fields and keeps
-only what a chart editor or game engine needs.
+1-Pass entirely. ``<song>_chart.json`` strips all derivable / debug fields and
+keeps only what a chart editor or game engine needs.
 
 Format rules (shared)
 ---------------------
@@ -24,10 +25,12 @@ Format rules (shared)
 
 Output naming
 -------------
-Both files live under ``out/<song_stem>/``. ``song_stem`` is derived from the
-song TOML's filename — Layer 5 doesn't peek inside the TOML. Optional debug
-PNGs (``raw_chart.png``, ``beat_signal.png``) can be dropped in the same
-directory by Layer 3's debug_viz.
+Both files live under ``out/<song_stem>/`` and are prefixed with the song stem
+(``<song_stem>_raw.json``, ``<song_stem>_chart.json``). ``song_stem`` is
+derived from the song TOML's filename — Layer 5 doesn't peek inside the TOML.
+Optional debug PNGs (``<song_stem>_raw_chart.png``,
+``<song_stem>_beat_signal.png``) can be dropped in the same directory by
+Layer 3's debug_viz.
 """
 
 from __future__ import annotations
@@ -81,13 +84,13 @@ def _dump(obj: dict, path: Path) -> None:
 
 
 # =============================================================================
-# raw.json — Layer 3
+# <song>_raw.json — Layer 3
 # =============================================================================
 
 def serialize_raw(l3: Layer3Result, *,
                   song_name: str,
                   video_path: str | None = None) -> dict:
-    """Build the ``raw.json`` payload from a Layer3Result."""
+    """Build the ``<song>_raw.json`` payload from a Layer3Result."""
     cal = l3.cal
     res = cal.display_resolution
     return {
@@ -135,7 +138,7 @@ def serialize_raw(l3: Layer3Result, *,
 
 
 # =============================================================================
-# chart.json — Layer 4
+# <song>_chart.json — Layer 4
 # =============================================================================
 
 def _note_payload(n: ChartNote) -> dict:
@@ -174,7 +177,7 @@ def _time_sig_payload(global_ts: TimeSignature,
 
 
 def serialize_chart(l4: Layer4Result, *, song_name: str) -> dict:
-    """Build the ``chart.json`` payload from a Layer4Result."""
+    """Build the ``<song>_chart.json`` payload from a Layer4Result."""
     cal = l4.cal
     return {
         "schema_version": SCHEMA_VERSION,
@@ -210,10 +213,12 @@ def output_dir(song_name: str, *, root: str | Path = "out") -> Path:
 def write_all(l3: Layer3Result, l4: Layer4Result, *,
               song_name: str,
               root: str | Path = "out") -> tuple[Path, Path]:
-    """Write ``raw.json`` + ``chart.json`` for one run. Returns both paths."""
+    """Write ``<song>_raw.json`` + ``<song>_chart.json`` for one run.
+    Returns both paths.
+    """
     out_dir = output_dir(song_name, root=root)
-    raw_path = out_dir / "raw.json"
-    chart_path = out_dir / "chart.json"
+    raw_path = out_dir / f"{song_name}_raw.json"
+    chart_path = out_dir / f"{song_name}_chart.json"
     _dump(serialize_raw(l3, song_name=song_name), raw_path)
     _dump(serialize_chart(l4, song_name=song_name), chart_path)
     return raw_path, chart_path

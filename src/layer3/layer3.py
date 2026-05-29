@@ -210,6 +210,7 @@ if __name__ == "__main__":
     import time
 
     cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
+    song = Path(cfg).stem
     t0 = time.time()
     pipeline = Layer3Pipeline.from_config(cfg)
     result = pipeline.run()
@@ -219,10 +220,12 @@ if __name__ == "__main__":
     # verification artifacts: the raw piano-roll and the POW LED trace
     try:
         from layer3.debug_viz import plot_raw_chart, plot_beat_signal
-        plot_raw_chart(result.notes, result.cal, "raw_chart.png")
+        raw_png = f"{song}_raw_chart.png"
+        beat_png = f"{song}_beat_signal.png"
+        plot_raw_chart(result.notes, result.cal, raw_png)
         plot_beat_signal(pipeline.beat_signal, result.beats,
-                         "beat_signal.png", frame_range=(900, 1300),
+                         beat_png, frame_range=(900, 1300),
                          barlines=result.barlines)
-        print("\nwrote raw_chart.png, beat_signal.png")
+        print(f"\nwrote {raw_png}, {beat_png}")
     except Exception as exc:                # viz is optional, never fatal
         print(f"\n(visualization skipped: {exc})")

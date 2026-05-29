@@ -613,7 +613,7 @@ if __name__ == "__main__":
             out_path = Path(sys.argv[3])
         else:
             song = Path(cfg).stem
-            out_path = Path("../out") / song / f"debug_overlay_{start}_{end}.mp4"
+            out_path = Path("../out") / song / f"{song}_debug_overlay_{start}_{end}.mp4"
         print(f"rendering Layer 3 overlay video frames [{start}, {end}) "
               f"-> {out_path}")
         result = render_overlay_video(cal, out_path, (start, end))

@@ -2,8 +2,8 @@
 EZ2CV — end-to-end entry point
 ===============================================================================
 Takes a single song TOML, runs Layer 1 -> 2 -> 3 -> 4 -> 5 sequentially, and
-produces the final artifacts (``out/<song>/raw.json``, ``chart.json``) along
-with optional visualizations.
+produces the final artifacts (``out/<song>/<song>_raw.json``,
+``<song>_chart.json``) along with optional visualizations.
 
 Each layer's ``__main__`` block is for standalone module debugging; this file
 is the single entry point used to run the full pipeline in one shot.
@@ -75,10 +75,11 @@ def run(config_path: str | Path, *,
     config_path
         Path to the per-song TOML.
     chart_image
-        If True, render ``chart_visual.png`` from the final ``chart.json``.
+        If True, render ``<song>_chart_visual.png`` from the final
+        ``<song>_chart.json``.
     debug_png
-        If True, also write ``raw_chart.png`` and ``beat_signal.png``
-        (Layer 3 static debug overlays).
+        If True, also write ``<song>_raw_chart.png`` and
+        ``<song>_beat_signal.png`` (Layer 3 static debug overlays).
     debug_video
         If not None, render a Layer 3 overlay mp4. Pass ``""`` for the full
         clip (0..frame_count), or ``"START:END"`` for a custom frame range.
@@ -142,8 +143,8 @@ def run(config_path: str | Path, *,
     if debug_png:
         try:
             from layer3.debug_viz import plot_raw_chart, plot_beat_signal
-            raw_png = out_root / "raw_chart.png"
-            beat_png = out_root / "beat_signal.png"
+            raw_png = out_root / f"{song}_raw_chart.png"
+            beat_png = out_root / f"{song}_beat_signal.png"
             plot_raw_chart(l3.notes, l3.cal, raw_png)
             plot_beat_signal(pipeline.beat_signal, l3.beats, beat_png,
                              barlines=l3.barlines)
@@ -156,7 +157,7 @@ def run(config_path: str | Path, *,
         try:
             from layer3.debug_viz import render_overlay_video
             start, end = _parse_range(debug_video, max_end=frame_count)
-            video_out = out_root / f"debug_overlay_{start}_{end}.mp4"
+            video_out = out_root / f"{song}_debug_overlay_{start}_{end}.mp4"
             print(f"  rendering Layer 3 overlay video [{start}, {end}) "
                   f"-> {video_out}")
             render_overlay_video(cal, video_out, (start, end))
@@ -167,7 +168,7 @@ def run(config_path: str | Path, *,
     if chart_image:
         try:
             from layer5.visualize_chart import render
-            chart_png = out_root / "chart_visual.png"
+            chart_png = out_root / f"{song}_chart_visual.png"
             render(chart_path, chart_png,
                    lane_colors=[ln.color for ln in cal.lanes])
             print(f"  wrote {chart_png}")
@@ -193,12 +194,12 @@ example
 
 output
 -----------
-  out/<song>/raw.json
-  out/<song>/chart.json
-  out/<song>/chart_visual.png                  (disable via --no-chart-image)
-  out/<song>/raw_chart.png                     (--debug-png)
-  out/<song>/beat_signal.png                   (--debug-png)
-  out/<song>/debug_overlay_<start>_<end>.mp4   (--debug-video)
+  out/<song>/<song>_raw.json
+  out/<song>/<song>_chart.json
+  out/<song>/<song>_chart_visual.png                  (disable via --no-chart-image)
+  out/<song>/<song>_raw_chart.png                     (--debug-png)
+  out/<song>/<song>_beat_signal.png                   (--debug-png)
+  out/<song>/<song>_debug_overlay_<start>_<end>.mp4   (--debug-video)
 """
 
 
@@ -217,12 +218,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help=f"path to TOML file (default: {DEFAULT_CONFIG!r})")
     p.add_argument("--no-chart-image", dest="chart_image",
                    action="store_false",
-                   help="disable rendering of the final chart.json to chart_visual.png"
-                        "(default: enabled)")
+                   help="disable rendering of the final <song>_chart.json to "
+                        "<song>_chart_visual.png (default: enabled)")
     p.add_argument("--debug-png", action="store_true",
-                   help="save two additional Layer 3 static debug PNGs"
-                        "(raw_chart.png: millisecond-based raw piano roll, "
-                        "beat_signal.png: POW LED brightness trace)")
+                   help="save two additional Layer 3 static debug PNGs "
+                        "(<song>_raw_chart.png: millisecond-based raw piano roll, "
+                        "<song>_beat_signal.png: POW LED brightness trace)")
     p.add_argument("--debug-video", nargs="?", const=_VIDEO_FULL, default=None,
                    metavar="START:END",
                    help="save Layer 3 overlay as an MP4 file."

@@ -1,4 +1,4 @@
-"""Render `out/<song>/chart.json` as a piano-roll style image.
+"""Render `out/<song>/<song>_chart.json` as a piano-roll style image.
 
 Layout
 - 5 lanes per column, drawn bottom-up (early ticks at the bottom).
@@ -9,8 +9,8 @@ Layout
   the global time signature.
 
 CLI:
-    uv run python src/layer5/visualize_chart.py [out/<song>/chart.json]
-    # default: out/song/chart.json
+    uv run python src/layer5/visualize_chart.py [out/<song>/<song>_chart.json]
+    # default: out/song/song_chart.json
 """
 
 from __future__ import annotations
@@ -256,14 +256,14 @@ def render(chart_path: Path, out_path: Path, *,
 # ─────────────────────────────────── CLI ──────────────────────────────────
 
 if __name__ == "__main__":
-    # Usage:  python src/layer5/visualize_chart.py [chart.json] [config.toml]
-    # chart.json no longer carries lane_colors, so the song TOML must be passed
-    # alongside it to resolve colors. For legacy files (lane_colors present in
-    # meta) the second argument can be omitted.
+    # Usage:  python src/layer5/visualize_chart.py [<song>_chart.json] [config.toml]
+    # <song>_chart.json no longer carries lane_colors, so the song TOML must be
+    # passed alongside it to resolve colors. For legacy files (lane_colors
+    # present in meta) the second argument can be omitted.
     if len(sys.argv) >= 2:
         chart_path = Path(sys.argv[1])
     else:
-        chart_path = Path("out/song/chart.json")
+        chart_path = Path("out/song/song_chart.json")
     if not chart_path.exists():
         raise SystemExit(f"chart not found: {chart_path}")
 
@@ -273,5 +273,8 @@ if __name__ == "__main__":
         cal = resolve_calibration(sys.argv[2])
         lane_colors = [ln.color for ln in cal.lanes]
 
-    out_path = chart_path.with_name("chart_visual.png")
+    # <song>_chart.json → <song>_chart_visual.png; fall back to parent dir name
+    stem = chart_path.stem
+    song = stem[:-len("_chart")] if stem.endswith("_chart") else chart_path.parent.name
+    out_path = chart_path.with_name(f"{song}_chart_visual.png")
     render(chart_path, out_path, lane_colors=lane_colors)

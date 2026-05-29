@@ -45,8 +45,8 @@ Only the `5k` key mode at `1920x1080` is fully calibrated at the moment.
 
 Two JSON files are written under `out/<song>/`:
 
-- `raw.json` — Layer 3 result (ms-based notes, beats, barlines)
-- `chart.json` — Layer 4 result (tick-based chart with BPM and time signature)
+- `<song>_raw.json` — Layer 3 result (ms-based notes, beats, barlines)
+- `<song>_chart.json` — Layer 4 result (tick-based chart with BPM and time signature)
 
 ---
 

@@ -68,6 +68,10 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# Claude stuff:
+.claude/
+CLAUDE.md
+
 # Sphinx documentation
 docs/_build/
 
@@ -218,12 +222,12 @@ __marimo__/
 .streamlit/secrets.toml
 
 # 
-CLAUDE.md
 /smp
 /config/*.toml
 /config/skins/ez2on/5k/*
 !/config/song.toml
-/.claude
 /out/*
 measureline_calibrate.py
 /doc/game_mechanism.md
+/debug
+TODO.md
