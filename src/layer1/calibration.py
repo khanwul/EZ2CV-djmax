@@ -71,12 +71,20 @@ class MeasureLineConfig:
     """Per-skin measure-line detection tunables (Layer 3 consumes these).
 
     The Layer 3 detector looks for a thin, mid-grey, near-full-width band by
-    stacking per-lane projections and counting lit lanes per row. Each field
-    here corresponds to one filter:
+    stacking per-lane projections and counting lit lanes per row. To survive
+    sub-pixel motion (a 1px line scrolling ~33px/frame straddles two pixel rows
+    and splits its energy below any single-row gate), the "lit" test runs on the
+    2-row sliding energy SUM of each lane's projection, which recombines the
+    split energy regardless of straddle phase. Each field is one filter:
 
-    * min_brightness : a lane row must exceed this to count as "lit"
+    * lit_energy_threshold : a lane's 2-row energy sum must exceed this to count
+                             as "lit" (recombined line energy; ~single-row line
+                             brightness, since the sum collapses the split)
+    * min_brightness : single-row band mean lower bound (rejects near-background)
     * max_brightness : reject note-bright bands (~218 on the ez2on skin)
-    * max_thickness  : reject thicker bands (a 22px note chord; the bar; glow)
+    * max_thickness  : reject thicker bands (a 22px note chord; the bar; glow) —
+                       this is what keeps long-note bodies from being mistaken
+                       for the line even though the energy sum recovers dim rows
     * lane_slack     : allow this many lanes to miss the coincidence (occlusion
                        or split-frame), so the gate is key_count - lane_slack
     """
@@ -85,6 +93,7 @@ class MeasureLineConfig:
     max_brightness: float
     max_thickness: int
     lane_slack: int
+    lit_energy_threshold: float = 50.0
 
 
 @dataclass
@@ -379,6 +388,7 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         max_brightness=float(ml_skin["max_brightness"]),
         max_thickness=int(ml_skin["max_thickness"]),
         lane_slack=int(ml_skin["lane_slack"]),
+        lit_energy_threshold=float(ml_skin.get("lit_energy_threshold", 50.0)),
     )
 
     return Calibration(

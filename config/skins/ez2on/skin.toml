@@ -74,19 +74,30 @@ diff_threshold   = 2.0
 # (1) lit in (almost) every lane, (2) within a mid-grey brightness window, and
 # (3) thin (a chord of notes is ~22px thick).
 #
-#   channel        : which single-channel image to inspect (gray suits the white line)
-#   min_brightness : per-lane row mean must exceed this to count as "lit"
-#   max_brightness : reject note-bright bands (~218 on this skin)
-#   max_thickness  : reject thick bands (a chord; the judgment bar; glow)
-#   lane_slack     : allow this many lanes to miss the coincidence (occlusion)
+# The "lit" test runs on the 2-row sliding ENERGY SUM of each lane's projection,
+# not the raw row mean. A 1px line scrolling ~33px/frame straddles two pixel rows
+# and splits its energy so neither row clears a single-row gate — that flicker
+# was dropping whole measures (see measureline_detection_findings). Summing
+# adjacent rows recovers the line's full energy regardless of straddle phase.
+# Validated on 4 songs (incl. long-note-heavy Dream Walker): 94-96% recall, FP~0.
+#
+#   channel              : which single-channel image to inspect (gray suits the white line)
+#   lit_energy_threshold : a lane's 2-row energy sum must exceed this to be "lit"
+#   min_brightness       : single-row band-mean lower bound (rejects near-background)
+#   max_brightness       : reject note-bright bands (~218 on this skin)
+#   max_thickness        : reject thick bands (a chord; the judgment bar; glow) —
+#                          this is what still rejects long-note bodies
+#   lane_slack           : allow this many lanes to miss the coincidence (occlusion)
 [measure_line]
-channel        = "gray"
-# Calibrated empirically on the Dream Walker capture (see measureline_calibrate.py):
-# per-band mean of thin full-width coincidence runs is ~p10=116, p50=127, p90=144,
-# floor 94. 1920x1080 captures render the line ~1px thick but a few thicker
-# frames exist, so max_thickness has headroom. Note bodies (~218) and the
-# judgment bar are still rejected by the upper brightness gate.
-min_brightness = 90.0
-max_brightness = 180.0
-max_thickness  = 8
-lane_slack     = 1
+channel              = "gray"
+# Calibrated on the 4-song validation set (see measureline_detection_findings):
+# a thin full-width line's single-row band mean is ~p10=116..p50=127 when it lands
+# cleanly on one row, but dips to ~55-90 in sub-pixel-split frames. The energy sum
+# threshold (~single-row line brightness) catches those; the single-row floor only
+# rejects pure background. Note bodies (~218) rejected by max_brightness, long-note
+# bodies by max_thickness.
+lit_energy_threshold = 50.0
+min_brightness       = 40.0
+max_brightness       = 180.0
+max_thickness        = 8
+lane_slack           = 1

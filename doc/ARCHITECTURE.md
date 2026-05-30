@@ -146,7 +146,7 @@ flowchart LR
     end
 
     subgraph BAR["bar-line path"]
-        md["measureline.py<br/>MeasureLineDetector<br/>+ MeasureLineTracker"]
+        md["measureline.py<br/>MeasureLineDetector<br/>+ MeasureLineTracker<br/><i>2-row energy-sum<br/>full-width thin band</i>"]
     end
 
     det     --> s1
@@ -172,6 +172,7 @@ Design invariants:
 - **No normalization.** Thresholds are absolute 0–255 values; normalizing would break them.
 - **Coordinate convention.** `roi_y_origin + in-ROI y = full-frame y`, and `lane.match_x_origin + in-ROI x = full-frame x`.
 - **Barline path free-rides Stage 1.** The measure-line detector reuses the per-lane projection that Stage 1 already computes, so it costs almost zero extra work.
+- **Energy-sum lit test (sub-pixel robustness).** A 1px barline scrolling ~33px/frame straddles two pixel rows and splits its energy below any single-row brightness gate, so a raw row-mean test flickers and drops whole measures. The detector instead thresholds the **2-row sliding energy sum** (`proj[y] + proj[y+1]`), which recombines the split energy regardless of straddle phase (4-song recall 94–96%, FP~0). The `max_thickness` gate still rejects long-note bodies, so recovering dim rows does not let thick objects through.
 - **Why POW LED.** The LED flicker is a tempo signal that is immune to scroll-speed changes (SV). Barlines give measure phase; LED gives beat phase — both are needed.
 - **Beat onset = rise edge, not peak.** `BeatEvent.frame_index` is the **last dark frame** before the LED jumps (i.e. one frame before the detection frame), not the first bright frame. Verified against barline crossings: reporting the peak gives a systematic ~1.8 frame lag; reporting the rise edge halves it to ~0.8 frames. A residual ~0.8-frame lag (std 0.33) remains — this is the game itself rendering the LED flash ~1 frame after the visual barline crossing, and must be absorbed by Layer 4's LED-multiplier anchor rather than re-fought here.
 
@@ -269,9 +270,12 @@ classDiagram
     }
 
     class MeasureLineConfig {
-        +y_range: tuple
-        +threshold: int
-        +min_run_px: int
+        +channel: str
+        +lit_energy_threshold: float
+        +min_brightness: float
+        +max_brightness: float
+        +max_thickness: int
+        +lane_slack: int
     }
 
     class PreprocessedFrame {

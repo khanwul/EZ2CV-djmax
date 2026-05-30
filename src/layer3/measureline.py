@@ -31,6 +31,12 @@ projection SIGNAL still carries the line. This module reads those projections
 and looks for a thin row that is lit, at mid-grey brightness, in (almost) every
 lane at once.
 
+The "lit" test runs on the 2-row sliding ENERGY SUM of each projection, not the
+raw row mean: a 1px line scrolling ~33px/frame straddles two pixel rows and
+splits its energy below any single-row gate, so a raw-mean test flickers in and
+out and drops whole measures. Summing adjacent rows recombines the split energy
+regardless of straddle phase (see measureline_detection_findings).
+
 Discriminators (a measure line vs. the things it could be confused with):
   * a full chord of notes  -> also full-width, but ~22px THICK     -> thickness
   * the judgment bar       -> full-width, ~4-6px, fixed at line_y  -> thickness
@@ -109,6 +115,7 @@ class MeasureLineDetector:
     """
 
     def __init__(self, cal: Calibration, *,
+                 lit_energy_threshold: float | None = None,
                  min_brightness: float | None = None,
                  max_brightness: float | None = None,
                  max_thickness: int | None = None,
@@ -123,6 +130,9 @@ class MeasureLineDetector:
         """
         ml = cal.measure_line
         self.cal = cal
+        self.lit_energy_threshold = (ml.lit_energy_threshold
+                                     if lit_energy_threshold is None
+                                     else lit_energy_threshold)
         self.min_brightness = (ml.min_brightness if min_brightness is None
                                else min_brightness)
         self.max_brightness = (ml.max_brightness if max_brightness is None
@@ -135,14 +145,25 @@ class MeasureLineDetector:
     # ------------------------------------------------------------------ #
     def detect_frame(self, s1_results: list[Stage1Result]
                      ) -> list[MeasureLineDetection]:
-        """Find every measure-line band in one frame's Stage 1 output."""
+        """Find every measure-line band in one frame's Stage 1 output.
+
+        The "lit" test runs on the 2-row sliding energy SUM of each lane's
+        projection, not the raw row mean. A 1px line scrolling fast straddles
+        two pixel rows and splits its energy below any single-row gate (the
+        flicker that dropped whole measures); summing adjacent rows recovers the
+        full energy regardless of straddle phase. Long-note bodies survive the
+        sum too but are still rejected downstream by ``max_thickness``.
+        """
         if not s1_results:
             return []
 
         # per-lane row-mean projections, stacked: (n_lanes, H)
         projs = np.stack([r.projection for r in s1_results])
-        lit = projs > self.min_brightness                  # (n_lanes, H)
-        coincidence = lit.sum(axis=0)                      # (H,) lanes lit / row
+        # 2-row sliding energy sum recombines a sub-pixel-split thin line.
+        # energy[:, i] covers projection rows i and i+1.
+        energy = projs[:, :-1] + projs[:, 1:]              # (n_lanes, H-1)
+        lit = energy > self.lit_energy_threshold           # (n_lanes, H-1)
+        coincidence = lit.sum(axis=0)                      # (H-1,) lanes lit / row
         full_width = coincidence >= self.min_lanes
 
         origin = s1_results[0].roi_y_origin
@@ -152,13 +173,14 @@ class MeasureLineDetector:
         for s, e in _find_runs(full_width):
             if (e - s) > self.max_thickness:
                 continue                                   # too thick -> not a line
-            strength = float(projs[:, s:e].mean())
+            # energy run [s, e) spans projection rows s .. e (inclusive).
+            strength = float(projs[:, s:e + 1].mean())
             if not (self.min_brightness < strength < self.max_brightness):
                 continue                                   # note-bright -> reject
             out.append(MeasureLineDetection(
                 frame_index=fidx,
-                y_center=(s + e - 1) / 2.0 + origin,
-                thickness=e - s,
+                y_center=(s + e) / 2.0 + origin,
+                thickness=e - s + 1,
                 strength=strength,
             ))
         return out
