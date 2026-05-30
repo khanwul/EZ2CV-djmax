@@ -30,6 +30,12 @@ line_y                 = 824      # center of judgment bar at HIGHEST position
 oscillation_range      = 2        # +-2px bar movement (informational)
 note_height            = 22       # note (and template) height in px
 trigger_template_y_top = 802      # = line_y - note_height. Resolver verifies this.
+tail_release_offset_px = 13       # extra descent past the tail-sprite bottom before a
+                                  # longnote's hold actually RELEASES. Added (on top of
+                                  # note_height) to the tail crossing only — see
+                                  # tracking.py:_tail_lag_frames. Empirically ~12-13px
+                                  # (Dream Walker 221 LN, GEHENNA 102 LN); without it
+                                  # longnote lengths land ~1/64 note short after snapping.
 
 [beat_indicator]
 # POW LED ROI [x1,y1,x2,y2], native pixels. Detection method is in skin.toml.

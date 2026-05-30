@@ -311,14 +311,19 @@ class NoteTracker:
         A note/lnhead is hit the instant its tracked top reaches the line, and
         that is accurate. A longnote does not END at the tail-top crossing — the
         tail must descend until it has fully PASSED the line (its bottom, one
-        ``note_height`` lower, reaches the line), so the release is ``note_height
-        / speed`` frames later. Applied as a post-hoc lag on the COMPUTED
-        crossing rather than by moving the trigger line, so the edge tracking,
-        pairing and extrapolation gates are untouched (the bias-fix must not
-        change which notes are detected, only a longnote's end time).
+        ``note_height`` lower, reaches the line) AND a skin-specific release
+        margin (``tail_release_offset_px``) of further descent before the hold
+        actually lets go. So the release is ``(note_height + offset) / speed``
+        frames later. Without the offset the tail-bottom model alone lands the
+        end ~12-13px short, which snaps a longnote one 1/64 note too short
+        (measured on Dream Walker 221 LN, GEHENNA 102 LN). Applied as a post-hoc
+        lag on the COMPUTED crossing rather than by moving the trigger line, so
+        the edge tracking, pairing and extrapolation gates are untouched (the
+        bias-fix must not change which notes are detected, only an end time).
         """
         sp = self.speed.speed
-        return (self.cal.note_height / sp) if sp > 0 else 0.0
+        descent = self.cal.note_height + self.cal.tail_release_offset_px
+        return (descent / sp) if sp > 0 else 0.0
 
     def _check_trigger(self, e):
         """Emit if the trajectory straddles the trigger line (interpolation)."""

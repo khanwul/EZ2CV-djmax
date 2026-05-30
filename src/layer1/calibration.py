@@ -142,6 +142,7 @@ class Calibration:
     note_height: int
     note_width: int
     trigger_template_y_top: int
+    tail_release_offset_px: int         # extra tail descent before a longnote releases
 
     # --- lanes ---------------------------------------------------------------
     key_count: int
@@ -271,6 +272,7 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
     if trigger != expected_trigger:
         _warn(f"trigger_template_y_top={trigger} but line_y-note_height="
               f"{expected_trigger}; check the judgment geometry.")
+    tail_release_offset = int(jd.get("tail_release_offset_px", 0))
 
     # --- 5. resolve templates & per-lane data -------------------------------
     pf          = profile["playfield"]
@@ -421,6 +423,7 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         note_height=note_height,
         note_width=tw,
         trigger_template_y_top=trigger,
+        tail_release_offset_px=tail_release_offset,
         key_count=key_count,
         lanes=lanes,
         roi_x_margin=margin,
