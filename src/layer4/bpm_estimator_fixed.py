@@ -51,8 +51,9 @@ from layer4.tick_clock import BPMDraft, TickClock
 
 # Reuse all leaf helpers + tunables from the original module unchanged.
 from layer4.bpm_estimator import (
-    SLOPE_ZERO_BPM, MIN_BEATS_PER_SEGMENT, ANCHOR_MIN_SPLIT_LEN,
-    ENDPOINT_PERCENTILE, DEFAULT_CHANGE_RATE, DEFAULT_SMOOTH_WINDOW,
+    SLOPE_ZERO_BPM, RELATIVE_SLOPE_TOL, MIN_BEATS_PER_SEGMENT,
+    ANCHOR_MIN_SPLIT_LEN, ENDPOINT_PERCENTILE, DEFAULT_CHANGE_RATE,
+    DEFAULT_SMOOTH_WINDOW,
     _octave_factor, _detect_led_multiplier, _change_points, _merge_short,
     _clip_to_active, _is_bimodal_ramp, _segment_data_is_bimodal,
     _best_split_point,
@@ -97,6 +98,8 @@ def _fit_segment(times: np.ndarray, intervals: np.ndarray,
 
     if len(bpms) < 2:
         # too few beats to detect a ramp → constant at the unbiased level
+        if min_bpm > 0 and max_bpm > 0:
+            bpm_const = float(np.clip(bpm_const, min_bpm, max_bpm))
         return BPMDraft(start_ms, end_ms, bpm_const, bpm_const)
 
     # (2) linear fit — used ONLY to detect a genuine ramp ------------------
@@ -106,15 +109,23 @@ def _fit_segment(times: np.ndarray, intervals: np.ndarray,
 
     # (3) endpoint clamp ---------------------------------------------------
     if global_anchor and min_bpm > 0 and max_bpm > 0:
-        b0 = float(np.clip(b0, min_bpm, max_bpm))
-        b1 = float(np.clip(b1, min_bpm, max_bpm))
+        clamp_lo, clamp_hi = min_bpm, max_bpm
     else:
-        p_lo, p_hi = np.percentile(bpms, ENDPOINT_PERCENTILE)
-        b0 = float(np.clip(b0, p_lo, p_hi))
-        b1 = float(np.clip(b1, p_lo, p_hi))
+        clamp_lo, clamp_hi = (float(v) for v in
+                              np.percentile(bpms, ENDPOINT_PERCENTILE))
+    b0 = float(np.clip(b0, clamp_lo, clamp_hi))
+    b1 = float(np.clip(b1, clamp_lo, clamp_hi))
+    # Clamp the unbiased constant level too — otherwise a noisy fast segment
+    # whose mean-interval inverts to above max_bpm leaks through the collapse
+    # path below (the bug that gave GEHENNA a 225 > max_bpm=222.22 segment).
+    bpm_const = float(np.clip(bpm_const, clamp_lo, clamp_hi))
 
-    # (4) slope-zero collapse → UNBIASED constant level --------------------
-    if abs(b1 - b0) < SLOPE_ZERO_BPM:
+    # (4) near-constant collapse → UNBIASED constant level -----------------
+    # Absolute OR relative slope gate; the relative test kills fit-noise
+    # "ramps" like 190.0→194.1 that the tight absolute gate left as spurious
+    # accelerandos.
+    if abs(b1 - b0) < max(SLOPE_ZERO_BPM,
+                          RELATIVE_SLOPE_TOL * max(abs(b0), abs(b1))):
         return BPMDraft(start_ms, end_ms, bpm_const, bpm_const)
     return BPMDraft(start_ms, end_ms, b0, b1)
 
@@ -182,6 +193,19 @@ def estimate_bpm_drafts(beats: list[BeatEvent], *,
     if len(times) < 2:
         return []
     intervals = np.diff(times)
+
+    # auto-derive a (non-folding) BPM range when the config left it unset (0):
+    # span an octave each side of the robust median so a genuine half/double-
+    # tempo section stays IN range and is not folded away. See the original
+    # estimate_bpm_drafts for the rationale.
+    if min_bpm <= 0 or max_bpm <= 0:
+        valid = intervals[intervals > 0]
+        if len(valid):
+            med_bpm = 60_000.0 / float(np.median(valid))
+            if min_bpm <= 0:
+                min_bpm = med_bpm * 0.45
+            if max_bpm <= 0:
+                max_bpm = med_bpm * 2.1
 
     anchor_factor = _detect_led_multiplier(intervals, min_bpm, max_bpm)
     global_anchor = anchor_factor is not None

@@ -305,6 +305,21 @@ class NoteTracker:
             return True
         return False
 
+    def _tail_lag_frames(self) -> float:
+        """Frames to ADD to a longnote tail's crossing time.
+
+        A note/lnhead is hit the instant its tracked top reaches the line, and
+        that is accurate. A longnote does not END at the tail-top crossing — the
+        tail must descend until it has fully PASSED the line (its bottom, one
+        ``note_height`` lower, reaches the line), so the release is ``note_height
+        / speed`` frames later. Applied as a post-hoc lag on the COMPUTED
+        crossing rather than by moving the trigger line, so the edge tracking,
+        pairing and extrapolation gates are untouched (the bias-fix must not
+        change which notes are detected, only a longnote's end time).
+        """
+        sp = self.speed.speed
+        return (self.cal.note_height / sp) if sp > 0 else 0.0
+
     def _check_trigger(self, e):
         """Emit if the trajectory straddles the trigger line (interpolation)."""
         traj = e.trajectory
@@ -314,6 +329,8 @@ class NoteTracker:
             if ya < self.trigger <= yb and yb != ya:
                 frac = (self.trigger - ya) / (yb - ya)
                 cf = fa + frac * (fb - fa)
+                if e.type == "lntail":
+                    cf += self._tail_lag_frames()
                 match = (sa + sb) / 2
                 conf = _trigger_confidence(len(traj), 0.0, match)
                 return TriggerEvent(e.lane, e.type, cf,
@@ -336,6 +353,8 @@ class NoteTracker:
         if sp <= 0 or (self.trigger - yb) > 3 * sp:    # died too far short
             return None
         cf = fb + (self.trigger - yb) / sp
+        if e.type == "lntail":
+            cf += self._tail_lag_frames()
         proj_ratio = (self.trigger - yb) / (3.0 * sp)  # 0 = clean .. 1 = max guess
         conf = _trigger_confidence(len(e.trajectory), proj_ratio, sb)
         return TriggerEvent(e.lane, e.type, cf,

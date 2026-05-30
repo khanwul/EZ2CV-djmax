@@ -59,12 +59,14 @@ from layer3.measureline import MeasureLineDetector, MeasureLineTracker, BarlineE
 _EVENT_ORDER = {"lnhead": 0, "note": 1, "lntail": 2}
 
 
-def _print_progress(done: int, total: int, *, width: int = 40) -> None:
+def _print_progress(done: int, total: int, *, width: int = 40,
+                    label: str = "") -> None:
     """Render a single in-place progress bar (overwrites itself via ``\\r``)."""
     frac = done / total
     filled = int(width * frac)
     bar = "█" * filled + "░" * (width - filled)
-    print(f"\r  [{bar}] {frac * 100:5.1f}%  {done}/{total} frames",
+    tag = f"[{label}] " if label else ""
+    print(f"\r  {tag}[{bar}] {frac * 100:5.1f}%  {done}/{total} frames",
           end="", flush=True)
 
 

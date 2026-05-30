@@ -344,7 +344,7 @@ def render_overlay_video(
     trail_length
         How many past positions of a tracked edge are drawn as fading dots.
     progress
-        If True, print a heartbeat every 500 frames.
+        If True, show an in-place progress bar (warmup / render phases).
 
     Returns
     -------
@@ -358,6 +358,7 @@ def render_overlay_video(
     from layer3.tracking import NoteTracker
     from layer3.beat import BeatDetector
     from layer3.measureline import MeasureLineDetector, MeasureLineTracker
+    from layer3.layer3 import _print_progress
 
     start, end = frame_range
     if not (0 <= start < end):
@@ -415,9 +416,9 @@ def render_overlay_video(
         recent_beats = [(f, e) for f, e in recent_beats
                         if pf.frame_index - f < _FLASH_FRAMES]
 
-        if progress and pf.frame_index and pf.frame_index % 500 == 0:
+        if progress and (pf.frame_index % 15 == 0 or pf.frame_index == end - 1):
             phase = "warmup" if pf.frame_index < start else "render"
-            print(f"  [{phase}] frame {pf.frame_index}")
+            _print_progress(pf.frame_index + 1, end, label=phase)
 
         if pf.frame_index < start:
             continue
@@ -455,6 +456,9 @@ def render_overlay_video(
                     f"VideoWriter failed to open: {save_path} "
                     f"(check codec availability for fourcc=mp4v)")
         writer.write(vis)
+
+    if progress:
+        print()                             # end the in-place bar line
 
     if raw_cap is not None:
         raw_cap.release()

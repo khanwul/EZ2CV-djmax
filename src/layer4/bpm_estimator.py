@@ -16,8 +16,9 @@ Algorithm
    index`` is an integer, so individual inter-beat intervals jitter by ±1
    frame regardless of the true tempo — at 60 fps and ~215 BPM that is ±6 %,
    which would spawn a change-point every beat. We therefore difference a
-   rolling-mean of intervals (window ``smooth_window``) rather than the raw
-   series, then flag a break wherever the smoothed change exceeds ``±3 %``.
+   rolling-MEDIAN of intervals (window ``smooth_window``) rather than the raw
+   series, then flag a break wherever the smoothed change exceeds ``±3 %``. A
+   median (not mean) keeps sharp tempo steps sharp instead of ramping them.
 3. **Per-segment octave fold**. Each segment's MEDIAN BPM is folded into
    ``[cal.min_bpm, cal.max_bpm]`` independently — a single global fold breaks
    on songs where the LED octave changes (e.g. half the song at 110 BPM
@@ -53,8 +54,13 @@ from layer4.tick_clock import BPMDraft, TickClock
 # =============================================================================
 
 DEFAULT_CHANGE_RATE = 0.03         # ±3 % rate-change → segment break
-DEFAULT_SMOOTH_WINDOW = 8          # rolling mean span used to denoise intervals
+DEFAULT_SMOOTH_WINDOW = 8          # rolling median span used to denoise intervals
 SLOPE_ZERO_BPM = 0.1               # |Δbpm| < this  → collapse to constant
+RELATIVE_SLOPE_TOL = 0.025         # |Δbpm|/level < this → also collapse to
+                                   # constant. Kills fit-noise "ramps" like
+                                   # 190.0→194.1 that the absolute gate leaves
+                                   # as spurious accelerandos; real game
+                                   # accelerandos exceed it.
 MIN_BEATS_PER_SEGMENT = 16         # bigger than the smooth window; over-fit guard
 ANCHOR_MIN_SPLIT_LEN = 3           # min split half-length when global anchor is
                                    # in effect (user range trusted → over-split
@@ -163,15 +169,22 @@ def _detect_led_multiplier(intervals: np.ndarray,
 # Change-point detection
 # =============================================================================
 
-def _rolling_mean(x: np.ndarray, window: int) -> np.ndarray:
-    """Centred rolling mean, edge-padded to keep length. Length-stable."""
+def _rolling_median(x: np.ndarray, window: int) -> np.ndarray:
+    """Centred rolling median, edge-padded to keep length. Length-stable.
+
+    Edge-PRESERVING, unlike a rolling mean: a sharp BPM step (a half-tempo
+    section's 190→95 drop, or GEHENNA's per-measure staircase) survives as a
+    sharp edge instead of being smeared across ``window`` beats into a fake
+    ramp, so the change-point detector fires AT the step. The ±1-frame
+    per-beat interval jitter is still removed.
+    """
     if window <= 1 or len(x) <= 1:
         return x.astype(float, copy=True)
     w = min(window, len(x))
     pad_l, pad_r = w // 2, w - w // 2 - 1
     xp = np.pad(x.astype(float), (pad_l, pad_r), mode="edge")
-    kernel = np.ones(w) / w
-    return np.convolve(xp, kernel, mode="valid")
+    win = np.lib.stride_tricks.sliding_window_view(xp, w)
+    return np.median(win, axis=1)
 
 
 def _change_points(intervals: np.ndarray,
@@ -188,7 +201,7 @@ def _change_points(intervals: np.ndarray,
     """
     cps = [0]
     if len(intervals) >= 2:
-        smoothed = _rolling_mean(intervals, smooth_window)
+        smoothed = _rolling_median(intervals, smooth_window)
         last_cp = 0
         for i in range(1, len(smoothed)):
             prev, cur = smoothed[i - 1], smoothed[i]
@@ -265,16 +278,22 @@ def _fit_segment(times: np.ndarray, intervals: np.ndarray,
     if global_anchor and min_bpm > 0 and max_bpm > 0:
         # Trust user range as hard bounds — lets a short slow sub-section pull
         # the endpoint down to min_bpm instead of being percentile-masked.
-        b0 = float(np.clip(b0, min_bpm, max_bpm))
-        b1 = float(np.clip(b1, min_bpm, max_bpm))
+        clamp_lo, clamp_hi = min_bpm, max_bpm
     else:
-        p_lo, p_hi = np.percentile(bpms, ENDPOINT_PERCENTILE)
-        b0 = float(np.clip(b0, p_lo, p_hi))
-        b1 = float(np.clip(b1, p_lo, p_hi))
+        clamp_lo, clamp_hi = (float(v) for v in
+                              np.percentile(bpms, ENDPOINT_PERCENTILE))
+    b0 = float(np.clip(b0, clamp_lo, clamp_hi))
+    b1 = float(np.clip(b1, clamp_lo, clamp_hi))
 
-    # (4) slope-zero collapse ---------------------------------------------
-    if abs(b1 - b0) < SLOPE_ZERO_BPM:
-        m = float(np.mean(bpms))
+    # (4) near-constant collapse ------------------------------------------
+    # Collapse to a single BPM when the fitted slope is within SLOPE_ZERO_BPM
+    # (absolute) OR RELATIVE_SLOPE_TOL of the level (relative). The collapsed
+    # value is itself clamped — without this, a noisy fast segment whose mean
+    # sits above max_bpm leaked straight through here, ignoring the step-(3)
+    # clamp (the bug that gave GEHENNA a 225 > max_bpm=222.22 segment).
+    if abs(b1 - b0) < max(SLOPE_ZERO_BPM,
+                          RELATIVE_SLOPE_TOL * max(abs(b0), abs(b1))):
+        m = float(np.clip(np.median(bpms), clamp_lo, clamp_hi))
         return BPMDraft(start_ms, end_ms, m, m)
     return BPMDraft(start_ms, end_ms, b0, b1)
 
@@ -428,6 +447,21 @@ def estimate_bpm_drafts(beats: list[BeatEvent], *,
     if len(times) < 2:
         return []
     intervals = np.diff(times)
+
+    # --- auto-derive a BPM range when the song config left it unset (0) ----
+    # The octave-fold / anchor / endpoint-clamp machinery all need SOME range.
+    # We pick one wide enough to span an octave each side of the robust median
+    # BPM, so a genuine half- or double-tempo section stays IN range and is
+    # NOT folded away (folding a real 95-BPM section up to 190 would erase it).
+    # The range merely keeps the machinery from no-op'ing pathologically.
+    if min_bpm <= 0 or max_bpm <= 0:
+        valid = intervals[intervals > 0]
+        if len(valid):
+            med_bpm = 60_000.0 / float(np.median(valid))
+            if min_bpm <= 0:
+                min_bpm = med_bpm * 0.45   # just below half → 0.5× stays in
+            if max_bpm <= 0:
+                max_bpm = med_bpm * 2.1    # just above double → 2× stays in
 
     # --- global LED-multiplier anchor -------------------------------------
     # If the song's observed BPM median sits at a clean 2^k multiple of the

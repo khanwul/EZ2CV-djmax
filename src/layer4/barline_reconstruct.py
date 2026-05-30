@@ -81,6 +81,10 @@ RHO_MAX = 0.25                      # a barline farther than this from any beat
                                     #   (in local beat-interval units) is dropped
 PRIOR_44_BONUS_BEATS = 1.0          # 4/4 prior, expressed as a vote bonus
 MAX_MEASURES_PER_GAP = 8            # a true→true gap longer than this is implausible
+METER_MIN_SUPPORT = 3              # a single-measure gap length recurring at
+                                    #   least this many times is a real meter
+                                    #   the song uses (so its variant cost → 0),
+                                    #   not a one-off beat-count artifact
 
 
 # =============================================================================
@@ -168,16 +172,49 @@ def estimate_global_meter(beat_gaps: list[int],
 # Gap decomposition
 # =============================================================================
 
-def _decompose(delta: int, M: int) -> tuple[float, int, int]:
+def _known_meters(gaps: list[int], M: int, max_single: int,
+                  min_support: int = METER_MIN_SUPPORT) -> set[int]:
+    """Single-measure gap lengths that recur often enough to be REAL meters.
+
+    A gap length appearing ``≥ min_support`` times across the song is a meter the
+    composer actually uses (JUSTITIA's 5 and 6), not a one-off beat-count
+    artifact (GEHENNA's lone gap of 3 = a missed POW-LED beat). The global meter
+    ``M`` is always known.
+    """
+    from collections import Counter
+    freq = Counter(g for g in gaps if 1 <= g <= max_single)
+    known = {L for L, c in freq.items() if c >= min_support}
+    known.add(M)
+    return known
+
+
+def _decompose(delta: int, M: int,
+               max_single: int = max(DEFAULT_NUMERATORS),
+               known_meters: set[int] | None = None) -> tuple[float, int, int]:
     """Cheapest (cost, m measures, net variant beats) for a `delta`-beat gap.
 
-    The cheapest decomposition puts the gap on the nearest multiple of M; the
-    residual ``net = delta − m·M`` is the gap's net variant content. ``m`` is at
-    least 1 (two distinct barlines bound at least one measure).
+    Two regimes, split at ``max_single`` (the largest candidate meter):
+
+    * ``delta ≤ max_single`` — the gap is bounded by two DETECTED barlines and is
+      short enough to be a single measure, so it IS one measure of ``delta``
+      beats (the detector would have caught an interior boundary). Its variant
+      cost is ~0 when ``delta`` is a KNOWN (recurring) meter — so the DP trusts
+      the detected boundary instead of dropping it — but the full ``W_VAR·|net|``
+      when ``delta`` is a one-off length (a beat-count artifact), which keeps
+      such barlines droppable. This is what lets a pervasive-variant song keep
+      its 5/4·6/4 measures while a 4/4 song's stray short gap is still rejected.
+    * ``delta > max_single`` — too long for one measure, so it spans MISSED
+      barlines: decompose onto the nearest multiple of ``M`` (``m ≥ 2``); the
+      residual ``net`` is the net variant content hidden in the blind gap.
     """
-    base = max(1, round(delta / M))
+    if delta <= max_single:
+        net = delta - M
+        if known_meters is not None and delta in known_meters:
+            return (W_VAR * 0.0, 1, net)
+        return (W_VAR * abs(net), 1, net)
+    base = max(2, round(delta / M))
     best: tuple[float, int, int] | None = None
-    for m in {max(1, base - 1), max(1, base), base + 1}:
+    for m in {max(2, base - 1), base, base + 1}:
         net = delta - m * M
         cost = W_VAR * abs(net)
         if best is None or cost < best[0]:
@@ -189,7 +226,9 @@ def _decompose(delta: int, M: int) -> tuple[float, int, int]:
 # The DP : pick true barlines (drop FPs), score each gap by variant content
 # =============================================================================
 
-def _segment(ords: list[int], rhos: list[float], M: int
+def _segment(ords: list[int], rhos: list[float], M: int,
+             max_single: int = max(DEFAULT_NUMERATORS),
+             known_meters: set[int] | None = None
              ) -> tuple[list[int], list[int]]:
     """Return (indices of true barlines, indices of dropped FP barlines)."""
     K = len(ords)
@@ -208,7 +247,7 @@ def _segment(ords: list[int], rhos: list[float], M: int
                 continue
             if delta > M * MAX_MEASURES_PER_GAP:    # implausibly long jump
                 break
-            cost, _, _ = _decompose(delta, M)
+            cost, _, _ = _decompose(delta, M, max_single, known_meters)
             cand = (dp[j] - cost - LAM_OUT * (k - j - 1) - W_RHO * rhos[k])
             if cand > dp[k]:
                 dp[k] = cand
@@ -283,7 +322,9 @@ def reconstruct_barlines(barlines: list[BarlineEvent],
         estimate_global_meter(gaps, numerators)
 
     # 3) DP: true barlines + outliers
-    true_local, outlier_local = _segment(ords, rhos, M)
+    max_single = max(numerators)
+    known = _known_meters(gaps, M, max_single)
+    true_local, outlier_local = _segment(ords, rhos, M, max_single, known)
     outliers = [barlines[src_idx[i]] for i in outlier_local]
     true_ords = [ords[i] for i in true_local]
 
@@ -320,7 +361,7 @@ def reconstruct_barlines(barlines: list[BarlineEvent],
     for li in range(len(true_local) - 1):
         a_o, b_o = true_ords[li], true_ords[li + 1]
         b_src = src_idx[true_local[li + 1]]
-        _, m, net = _decompose(b_o - a_o, M)
+        _, m, net = _decompose(b_o - a_o, M, max_single, known)
         # measure lengths in this gap
         if net == 0:
             lengths = [M] * m

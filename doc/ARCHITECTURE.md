@@ -175,6 +175,7 @@ Design invariants:
 - **Energy-sum lit test (sub-pixel robustness).** A 1px barline scrolling ~33px/frame straddles two pixel rows and splits its energy below any single-row brightness gate, so a raw row-mean test flickers and drops whole measures. The detector instead thresholds the **2-row sliding energy sum** (`proj[y] + proj[y+1]`), which recombines the split energy regardless of straddle phase (4-song recall 94–96%, FP~0). The `max_thickness` gate still rejects long-note bodies, so recovering dim rows does not let thick objects through.
 - **Why POW LED.** The LED flicker is a tempo signal that is immune to scroll-speed changes (SV). Barlines give measure phase; LED gives beat phase — both are needed.
 - **Beat onset = rise edge, not peak.** `BeatEvent.frame_index` is the **last dark frame** before the LED jumps (i.e. one frame before the detection frame), not the first bright frame. Verified against barline crossings: reporting the peak gives a systematic ~1.8 frame lag; reporting the rise edge halves it to ~0.8 frames. A residual ~0.8-frame lag (std 0.33) remains — this is the game itself rendering the LED flash ~1 frame after the visual barline crossing, and must be absorbed by Layer 4's LED-multiplier anchor rather than re-fought here.
+- **Longnote tail-lag.** Every edge is tracked by its template TOP, and a note/lnhead is hit the instant its top reaches the judgment line. A longnote does not END there: it ends only when the tail has fully PASSED the line (its bottom reaches it), so `NoteTracker` adds a `note_height / speed` (~⅔ frame) lag to the **lntail crossing time only**. The lag is applied to the already-computed crossing (`cross_frame`), never by moving the trigger line — moving the line would change the extrapolation gate and head↔tail pairing and silently drop a few notes. With the lag the per-longnote length bias (~−12 ticks before) collapses to a median of 0.
 
 ---
 
@@ -186,60 +187,64 @@ Layer 4 consumes Layer 3's ms-domain result, decides BPM / time signature / grid
 flowchart TD
     L3R[("Layer3Result<br/>notes·beats·barlines (ms)")]:::data
 
-    subgraph BPM["bpm_estimator.py"]
-        a1["1. change-points<br/>(|Δt − Δt_prev| / Δt_prev > ±3%)"]
-        a2["2. PELT re-segmentation<br/>(high-variance segments only, ruptures rbf)"]
-        a3["3. linear fit per segment<br/>|Δbpm|&lt;0.1 → constant collapse"]
-        anc["LED-multiplier anchor<br/>(global, containment)"]
-        a1 --> a2 --> a3
-        a3 <-->|"trigger ⇒ hard clamp"| anc
+    subgraph REC["barline_reconstruct.py — runs FIRST"]
+        r1["beat-count index each barline<br/>(ordinal of nearest POW-LED beat)"]
+        r2["DP: keep true barlines (drop FP),<br/>decompose gaps into measures"]
+        r3["meter-frequency prior:<br/>gap ≤ 6 beats & recurs ≥ 3× ⇒ single<br/>variant measure (cost 0); one-off ⇒ droppable"]
+        r1 --> r2 --> r3
     end
 
-    subgraph TS["time_sig.py"]
-        t1["fit time-sig candidates to barlines<br/>pick min residual"]
-        t2["variant measures = within ±5%<br/>group consecutive runs"]
-        t1 --> t2
+    subgraph BPM["bpm_estimator_barline.py"]
+        b1["per-measure BPM =<br/>beats_per_measure · 60000 / gap_ms"]
+        b2["octave-fold + clamp to [min,max]"]
+        b3["run-length segments in PERIOD domain<br/>(rel 1.3% + frame-jitter floor<br/>+ magnitude-gated lone-spike guard)"]
+        b1 --> b2 --> b3
+        fb["fallback → bpm_estimator_fixed.py<br/>(beats, interval-domain, Jensen-corrected)<br/>when per-measure BPM zig-zags ±2×"]
+        b3 -. "meters look wrong" .-> fb
     end
 
     subgraph CLOCK["tick_clock.py"]
-        clk["TickClock<br/>BPMSegment.tick_at()<br/>closed-form ms↔tick"]
+        clk["TickClock<br/>piecewise-linear BPMSegment<br/>closed-form ms↔tick"]
+    end
+
+    subgraph TS["time_sig.py"]
+        t1["barline_ticks(): lay the reconstructed<br/>grid on ticks (global TS + variant runs)"]
     end
 
     subgraph Q["quantizer.py"]
         q1["allowed grids<br/>{1/4,1/8,1/12,1/16,1/24,1/32,1/48,1/64}"]
-        q2["cost = |Δtick| + α·log₂(denom)<br/>+ context-aware penalty"]
+        q2["cost = |Δtick| + α·log₂(denom)<br/>+ triplet context penalty"]
         q3["longnote head : absolute snap<br/>tail : length-snap relative to head"]
         q1 --> q2 --> q3
     end
 
     L4R[/"Layer4Result<br/>bpm_segments<br/>global_time_sig + variants<br/>notes : list[ChartNote]<br/>barlines_tick · stats"/]:::out
 
-    L3R -- "beats (ms)"     --> BPM
-    L3R -- "barlines (ms)"  --> TS
-    BPM -- "BPMSegments"    --> CLOCK
-    BPM -- "stable segments"--> TS
-    L3R -- "notes (ms)"     --> CLOCK
-    CLOCK -- "ms→tick"      --> Q
+    L3R -- "barlines + beats"        --> REC
+    REC -- "measure_meters<br/>(beats per measure)" --> BPM
+    L3R -- "beats (fallback path)"   --> BPM
+    BPM -- "BPMSegments"             --> CLOCK
+    REC -- "grid + TS + variants"    --> TS
+    CLOCK --> TS
+    L3R -- "notes (ms)"              --> CLOCK
+    CLOCK -- "ms→tick"              --> Q
     Q --> L4R
     TS --> L4R
     BPM --> L4R
 
-    sanity{"off-grid > 5% ?"}:::warn
-    L4R --> sanity
-    sanity -- yes --> retry["retry an octave shift<br/>→ re-fit time signature<br/>→ raise error flag"]:::warn
-
     classDef data fill:#dbeafe,stroke:#1e40af,color:#000
     classDef out  fill:#dcfce7,stroke:#166534,color:#000
-    classDef warn fill:#fde2e2,stroke:#991b1b,color:#000
 ```
 
 Algorithm highlights:
 
-- **Piecewise-linear BPM.** A gradual BPM change is expressed as a single segment in closed form; constant BPM automatically collapses to slope=0.
-- **LED-multiplier anchor.** The POW LED can flash 0.5, 1, or 2 times per beat; the global `2^k` factor is decided up-front so the rest of the pipeline cannot mis-pick the octave.
-- **Negative ticks.** Pickup notes that sit within one measure before the first barline are preserved with negative tick values.
-- **Context-aware snapping.** If neighbors land on 1/16, candidate 1/24 / 1/48 positions for adjacent notes get a penalty — prevents triplet vs. duple confusion.
-- **Determinism.** All stochastic steps (e.g., PELT) use a fixed seed. Same input → same output.
+- **Barline-derived BPM (primary).** A barline lands once per measure, so a measure's duration gives its tempo directly (`beats_per_measure · 60000 / gap_ms`) — no LED-multiplier octave guess, and one sample per measure resolves a per-measure tempo staircase the beat-stream estimator cannot. Segmentation runs in the period (ms-per-beat) domain with a relative tolerance plus an absolute frame-jitter floor, and a magnitude-gated lone-spike guard absorbs ±1-frame jitter without erasing real single-measure tempo steps.
+- **Beat-stream fallback.** When the per-measure BPMs zig-zag by ±2× (the signature of a wrong assumed meter, e.g. undetected variants), the barline curve is meaningless, so the clock falls back to `bpm_estimator_fixed` — the POW-LED beat estimator, which uses the interval-domain mean (`60000 / mean(interval)`) to dodge the convex (Jensen) upward bias of `mean(60000/interval)`, plus a median-filtered change-point detector, octave fold, and endpoint clamp.
+- **Variant detection (pervasive meters).** Variants are found by `barline_reconstruct`, not `time_sig`: each detected barline bounds a single measure, so a gap that is itself a plausible meter (≤ 6 beats) is one measure of that length, and a length that recurs often enough is trusted as a real meter (cost 0) while a one-off is droppable as a beat-count artifact. This recovers a 3/4 + pervasive 5/4·6/4 chart (JUSTITIA) instead of shredding every long gap into the global meter.
+- **Piecewise-linear BPM / closed form.** A gradual BPM change is a single segment evaluated in closed form; constant BPM collapses to slope=0.
+- **Negative ticks.** Pickup notes within one measure before the first barline are preserved with negative tick values.
+- **Context-aware snapping.** If neighbors land on 1/16, candidate 1/24 / 1/48 positions for adjacent notes get a penalty — prevents triplet vs. duple confusion. Notes beyond `max_tolerance_tick` are flagged `off_grid` but kept (no retry loop).
+- **Determinism.** No stochastic steps. Same input → same output.
 
 ---
 
@@ -396,7 +401,10 @@ main.py:run()
 │        ├── BeatDetector             (POW LED)
 │        └── MeasureLineDetector + Tracker
 ├── layer4.Layer4Result.from_layer3(l3)                 → Layer4Result
-│   └─ bpm_estimator → time_sig → tick_clock → quantizer
+│   └─ barline_reconstruct (grid + TS + variants)
+│      → bpm_estimator_barline (BPM from measure spacing,
+│        fallback bpm_estimator_fixed) → tick_clock
+│      → time_sig.barline_ticks → quantizer
 └── layer5.write_all(l3, l4)                            → raw.json, chart.json
     └─ optional: visualize_chart.render(...)            → chart_visual.png
 ```

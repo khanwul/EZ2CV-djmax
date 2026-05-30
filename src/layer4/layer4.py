@@ -35,7 +35,7 @@ from layer1.calibration import Calibration
 from layer3 import Layer3Result
 from layer3.tracking import RawNote
 from layer4.tick_clock import BPMSegment, TickClock
-from layer4.bpm_estimator_fixed import build_tick_clock
+from layer4.bpm_estimator_barline import build_tick_clock
 from layer4.time_sig import TimeSignature, TimeSigVariant, barline_ticks
 from layer4.barline_reconstruct import reconstruct_barlines
 from layer4.quantizer import (SnapResult, snap_with_local_context, snap_length,
@@ -132,8 +132,15 @@ class Layer4Pipeline:
         measure_zero_ms = float(barlines[0].ms)
         active_window = (float(barlines[0].ms), float(barlines[-1].ms))
         R = self.cal.tick_resolution
+        # Barline-derived BPM (per-measure resolution → resolves staircases),
+        # with an automatic fall back to the beat estimator when the assumed
+        # time signature is wrong. Pass the PER-MEASURE beat counts from the
+        # reconstruction so variant measures (5/4, 6/4, …) compute their BPM
+        # from the right beats-per-bar instead of a wrong global value.
         clock = build_tick_clock(
             self.l3.beats,
+            barlines,
+            np.asarray(rec.measure_meters, dtype=float),
             measure_zero_ms=measure_zero_ms,
             active_window_ms=active_window,
             min_bpm=self.cal.min_bpm,
