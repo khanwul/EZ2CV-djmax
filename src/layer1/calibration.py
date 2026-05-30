@@ -397,6 +397,10 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         raise CalibrationError(
             f"song.min_bpm and song.max_bpm must be > 0 "
             f"(got min_bpm={min_bpm}, max_bpm={max_bpm})")
+    if min_bpm > max_bpm:
+        raise CalibrationError(
+            f"song.min_bpm must be <= song.max_bpm "
+            f"(got min_bpm={min_bpm}, max_bpm={max_bpm})")
 
     return Calibration(
         skin_name=skin_name,
