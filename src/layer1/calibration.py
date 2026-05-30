@@ -391,6 +391,13 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         lit_energy_threshold=float(ml_skin.get("lit_energy_threshold", 50.0)),
     )
 
+    min_bpm = float(song["song"]["min_bpm"])
+    max_bpm = float(song["song"]["max_bpm"])
+    if min_bpm <= 0.0 or max_bpm <= 0.0:
+        raise CalibrationError(
+            f"song.min_bpm and song.max_bpm must be > 0 "
+            f"(got min_bpm={min_bpm}, max_bpm={max_bpm})")
+
     return Calibration(
         skin_name=skin_name,
         key_mode=key_mode,
@@ -401,8 +408,8 @@ def resolve_calibration(song_toml_path: str | Path) -> Calibration:
         fps=float(cap_cfg["fps"]),
         note_speed=float(cap_cfg["note_speed"]),
         tick_resolution=int(song["song"]["resolution"]),
-        min_bpm=float(song["song"]["min_bpm"]),
-        max_bpm=float(song["song"]["max_bpm"]),
+        min_bpm=min_bpm,
+        max_bpm=max_bpm,
         playfield_top=pf["top"],
         playfield_bottom=pf["bottom"],
         line_y=line_y,
