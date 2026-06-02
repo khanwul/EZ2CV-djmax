@@ -332,8 +332,21 @@ class NoteTracker:
             fa, ya, sa = traj[i]
             fb, yb, sb = traj[i + 1]
             if ya < self.trigger <= yb and yb != ya:
-                frac = (self.trigger - ya) / (yb - ya)
-                cf = fa + frac * (fb - fa)
+                # A normal straddle spans consecutive frames, so linear
+                # interpolation lands the crossing accurately. But a grace-kept
+                # lnhead straddles across the HOLD gap: it reached the line
+                # during its pre-hold descent (`fa, ya` just above), then sat
+                # motionless for several frames and reappears HELD just past the
+                # line (`fb, yb`). Interpolating across that stationary gap
+                # smears the crossing over the whole hold and post-dates it by
+                # several frames. The head actually crossed right after `fa`, so
+                # project from there at the global descent speed instead.
+                sp = self.speed.speed
+                if fb - fa > self.max_stale and e.type == "lnhead" and sp > 0:
+                    cf = fa + (self.trigger - ya) / sp
+                else:
+                    frac = (self.trigger - ya) / (yb - ya)
+                    cf = fa + frac * (fb - fa)
                 if e.type == "lntail":
                     cf += self._tail_lag_frames()
                 match = (sa + sb) / 2
@@ -374,6 +387,13 @@ class NoteTracker:
 class LongnoteStateMachine:
     """Pairs ordered TriggerEvents into RawNotes (per lane)."""
 
+    # A second lnhead this close behind an open one (no tail between) is taken
+    # to be that note's tail mis-typed as a head (see feed). Beyond this gap the
+    # two are treated as unrelated notes and the older head is overwritten — the
+    # window sits well above a short LN's body (~50 ms observed) yet far below
+    # the spacing to a genuine next longnote head (>=280 ms observed).
+    _MISTYPED_TAIL_MS = 150.0
+
     def __init__(self, cal: Calibration):
         self.cal = cal
         self._colors = {ln.index: ln.color for ln in cal.lanes}
@@ -382,6 +402,17 @@ class LongnoteStateMachine:
                            / cal.pixels_per_frame / cal.fps * 1000.0)
         self._open = {}                              # lane -> pending lnhead
         self.orphan_tails = 0                        # diagnostics
+
+    def _close(self, head, end_ev):
+        """Pair an open head with a closing edge into one RawNote."""
+        color = self._colors[head.lane]
+        extrap = head.extrapolated or end_ev.extrapolated
+        conf = min(head.confidence, end_ev.confidence)   # weakest end governs
+        if end_ev.ms - head.ms < self._min_ln_ms:        # too short -> it's a tap
+            return RawNote(head.lane, "tap", head.ms, None, color,
+                           conf, extrapolated=extrap)
+        return RawNote(head.lane, "longnote", head.ms, end_ev.ms, color,
+                       conf, extrapolated=extrap)
 
     def feed(self, ev: TriggerEvent):
         """Consume one TriggerEvent; return a RawNote when one completes."""
@@ -392,6 +423,24 @@ class LongnoteStateMachine:
                            extrapolated=ev.extrapolated)
 
         if ev.type == "lnhead":
+            pending = self._open.get(ev.lane)
+            if pending is not None and (
+                    self._min_ln_ms <= ev.ms - pending.ms < self._MISTYPED_TAIL_MS):
+                # A lane physically cannot hold two longnotes at once, so a
+                # second lnhead arriving a short-LN's body-length after an open
+                # one (no tail between) is the OPEN note's tail MIS-TYPED as a
+                # head — common for short longnotes whose head and tail sprites
+                # nearly touch (Stage 2 then picks the head template for the
+                # tail). Close the open longnote with this event as its tail
+                # rather than silently dropping the first head and losing the
+                # whole note. The gap is bounded on BOTH sides: below min_ln_ms
+                # the second head is a DUPLICATE re-detection of the same edge
+                # (the genuine tail still arrives later, so overwrite and let it
+                # pair); at/above the upper window the two are unrelated notes
+                # and overwriting is benign when the displaced head was itself
+                # spurious and a real head+tail pair follows.
+                self._open.pop(ev.lane)
+                return self._close(pending, ev)
             self._open[ev.lane] = ev                 # longnote opens
             return None
 
@@ -400,13 +449,7 @@ class LongnoteStateMachine:
             if head is None:
                 self.orphan_tails += 1               # tail with no head: drop
                 return None
-            extrap = head.extrapolated or ev.extrapolated
-            conf = min(head.confidence, ev.confidence)   # weakest end governs
-            if ev.ms - head.ms < self._min_ln_ms:    # too short -> it's a tap
-                return RawNote(ev.lane, "tap", head.ms, None, color,
-                               conf, extrapolated=extrap)
-            return RawNote(ev.lane, "longnote", head.ms, ev.ms, color,
-                           conf, extrapolated=extrap)
+            return self._close(head, ev)
         return None
 
     def flush(self):

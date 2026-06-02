@@ -25,20 +25,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 LANE_FILL = {
     "white": (235, 235, 235),
-    "cyan": (70, 215, 240),
-    "blue": (80, 130, 235),
-    "red": (235, 95, 95),
-    "green": (110, 220, 130),
-    "yellow": (240, 220, 90),
-    "purple": (190, 120, 230),
-    "pink": (240, 130, 200),
-    "orange": (245, 165, 80),
+    "cyan": (70, 215, 240)
 }
 LANE_EDGE = {k: tuple(min(255, c + 30) for c in v) for k, v in LANE_FILL.items()}
 LANE_BG = (28, 28, 32)
 PAGE_BG = (16, 16, 20)
 BARLINE_COLOR = (130, 130, 145)
 BEAT_COLOR = (60, 60, 72)
+SUBBEAT_COLOR = (38, 38, 46)   # 1/16 grid (quarter-of-a-beat) — dimmer than beats
 TEXT = (215, 215, 220)
 DIM_TEXT = (150, 150, 160)
 BPM_MARK = (255, 195, 80)
@@ -46,7 +40,7 @@ BPM_RAMP = (255, 140, 220)
 
 LANE_W = 26
 LANE_GAP = 1
-PX_PER_TICK = 0.18
+PX_PER_TICK = 0.36
 MEASURES_PER_COL = 4
 COL_PAD_LEFT = 38          # left padding for measure numbers
 COL_PAD_RIGHT = 110        # right padding for BPM marker text
@@ -167,6 +161,7 @@ def render(chart_path: Path, out_path: Path, *,
         col_inner_real = int((ce - cs) * PX_PER_TICK)
         col_bot = TOP_PAD + col_inner_h
         col_top = col_bot - col_inner_real
+        is_last_col = ci == len(columns) - 1
 
         lane_l = lane_x(col_x, 0)[0]
         lane_r = lane_x(col_x, n_lanes - 1)[1]
@@ -176,15 +171,22 @@ def render(chart_path: Path, out_path: Path, *,
             x0, x1 = lane_x(col_x, ln)
             draw.rectangle([x0, col_top, x1, col_bot], fill=LANE_BG)
 
-        # beat / barlines — step in quarter-notes (tick_res ticks)
-        t = ((cs // tick_res) + (1 if cs % tick_res else 0)) * tick_res
+        # grid — step in 1/16-notes (tick_res/4) so each beat is split into
+        # quarters and 16th-note placement is readable at a glance.
+        # Three tiers: barline > beat (quarter) > sub-beat (1/16).
+        bars_set = set(full_bars)
+        sub = max(1, tick_res // 4)
+        t = ((cs // sub) + (1 if cs % sub else 0)) * sub
         while t <= ce:
             y = tick_y(cs, t)
-            is_bar = t in set(full_bars)
-            color = BARLINE_COLOR if is_bar else BEAT_COLOR
-            w = 1
-            draw.line([lane_l, y, lane_r, y], fill=color, width=w)
-            t += tick_res
+            if t in bars_set:
+                color = BARLINE_COLOR
+            elif t % tick_res == 0:
+                color = BEAT_COLOR
+            else:
+                color = SUBBEAT_COLOR
+            draw.line([lane_l, y, lane_r, y], fill=color, width=1)
+            t += sub
 
         # measure numbers (left of lanes)
         for mi in range(m_start, min(m_start + MEASURES_PER_COL + 1, len(full_bars))):
@@ -218,12 +220,18 @@ def render(chart_path: Path, out_path: Path, *,
             txt = f"♩ {b0:.1f}→{b1:.1f}" if is_ramp else f"♩ {b0:.1f}"
             draw.text((lane_r + 6, y - 6), txt, fill=line_color, font=f_bpm)
 
-        # Notes — iterate everything overlapping the column
+        # Notes — iterate everything overlapping the column.
+        # Columns are half-open [cs, ce): a note (or longnote head) sitting
+        # exactly on the upper barline belongs to the NEXT column's bottom, not
+        # this column's top — otherwise it renders glued to the top edge,
+        # duplicating the same note shown at the next column's base. The last
+        # column has no successor, so it keeps the closing barline inclusive.
         for n in notes:
             st = n["start_tick"]
             et = n.get("end_tick")
             end_eff = et if et is not None else st
-            if end_eff < cs or st > ce:
+            beyond_top = st > ce if is_last_col else st >= ce
+            if end_eff < cs or beyond_top:
                 continue
             color_name = lane_colors[n["lane"]]
             fill = LANE_FILL.get(color_name, (200, 200, 200))
@@ -235,12 +243,17 @@ def render(chart_path: Path, out_path: Path, *,
             else:
                 y_start = tick_y(cs, st)
                 y_end = tick_y(cs, et)
-                # body
+                # body, clipped to the column so a longnote spanning the column
+                # boundary never spills past the top/bottom edge
                 body_fill = tuple(int(c * 0.55) for c in fill)
-                draw.rectangle([x0, y_end, x1, y_start], fill=body_fill, outline=edge)
-                # head + tail caps
-                draw.rectangle([x0, y_start - TAP_H + 1, x1, y_start], fill=fill, outline=edge)
-                draw.rectangle([x0, y_end, x1, y_end + TAP_H - 1], fill=fill, outline=edge)
+                body_top = max(col_top, y_end)
+                body_bot = min(col_bot, y_start)
+                draw.rectangle([x0, body_top, x1, body_bot], fill=body_fill, outline=edge)
+                # head / tail caps only when their tick lands inside this column
+                if cs <= st < ce or (is_last_col and st == ce):
+                    draw.rectangle([x0, y_start - TAP_H + 1, x1, y_start], fill=fill, outline=edge)
+                if cs <= et < ce or (is_last_col and et == ce):
+                    draw.rectangle([x0, y_end, x1, y_end + TAP_H - 1], fill=fill, outline=edge)
 
         # column outline + footer label
         draw.rectangle([lane_l - 1, col_top, lane_r + 1, col_bot], outline=(70, 70, 82))
