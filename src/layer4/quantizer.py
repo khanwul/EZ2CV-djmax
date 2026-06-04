@@ -16,7 +16,7 @@ a triplet interpretation.
 
 Allowed grid
 ------------
-    {1/4, 1/8, 1/12, 1/16, 1/24, 1/32, 1/48, 1/64}
+    {1/4, 1/8, 1/12, 1/16, 1/24, 1/32}
 
 If the best candidate is still > ``max_tolerance_tick`` away, the note is
 flagged as **off-grid** and kept at its rounded tick — the chart records the
@@ -32,8 +32,8 @@ import numpy as np
 
 
 # 1/N note denominators allowed for snapping
-ALLOWED_DENOMS: tuple[int, ...] = (4, 8, 12, 16, 24, 32, 48, 64)
-TRIPLET_DENOMS: frozenset[int] = frozenset({12, 24, 48})
+ALLOWED_DENOMS: tuple[int, ...] = (4, 8, 12, 16, 24, 32)
+TRIPLET_DENOMS: frozenset[int] = frozenset({12, 24})
 
 # tunables
 DEFAULT_ALPHA = 0.5                    # tick cost per bit of denom complexity
@@ -159,7 +159,7 @@ if __name__ == "__main__":
         12.3,                     # near 1/16 (12)
         7.9,                      # near 1/24 (8)
         5.4,                      # near 1/32 (6)
-        2.6,                      # near 1/64 (3)
+        2.6,                      # near 1/64 (3) — off-grid
         100.0,                    # exact 1/4 + a bit
     ]
     print(f"=== quantizer demo (R={R}) ===")
