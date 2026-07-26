@@ -18,8 +18,7 @@ Design invariants
 * NO normalization (no histogram eq, no auto-exposure). Calibration thresholds
   are absolute 0-255 values; normalizing would invalidate them.
 * Coordinate convention: every ROI starts at row `playfield_top`, so a Layer 3
-  match's y_top maps to a full-frame y by `+ roi_y_origin`; an in-ROI x maps by
-  `+ lane.match_x_origin`.
+  match's y_top maps to a full-frame y by `+ roi_y_origin`.
 
 Usage
 -----
@@ -33,12 +32,9 @@ Usage
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cv2
 import numpy as np
@@ -55,12 +51,8 @@ class LaneFrame:
     """Preprocessed pixel data for one lane of one frame."""
     index: int                       # 0-based lane index -> cal.lanes[index]
     color: str                       # "white" | "cyan" | ...
-    detection_channel: str           # key into CHANNEL_EXTRACTORS
     detection_roi: np.ndarray        # (H, lane_width) uint8, single channel
     matching_roi: np.ndarray         # (H, lane_width+2*margin, 3) uint8 BGR
-    match_x_origin: int              # in-ROI x  + this = full-frame x
-    x_range: tuple[int, int]         # detection ROI x in full-frame coords
-    match_x_range: tuple[int, int]   # matching  ROI x in full-frame coords
 
 
 @dataclass
@@ -71,7 +63,6 @@ class PreprocessedFrame:
     roi_y_origin: int                # in-ROI y + this = full-frame y
     lanes: list[LaneFrame]
     beat_roi: np.ndarray             # (h, w) uint8, beat_channel of the POW LED
-    measure_roi: np.ndarray          # (H, full_playfield_width) uint8, single channel for measure line detection
 
 
 # =============================================================================
@@ -108,15 +99,12 @@ class Preprocessor:
         self.mask_regions = mask_regions or []
 
         # --- channel dedup: which detection channels are actually used ------
-        self._channels = sorted(
-            {ln.detection_channel for ln in cal.lanes} | {cal.measure_line_channel}
-        )
+        self._channels = sorted({ln.detection_channel for ln in cal.lanes})
 
         # --- X-crop band (only if precrop) ----------------------------------
         bx1, by1, bx2, by2 = cal.beat_roi
-        mlx1, mlx2 = cal.measure_line_x_range
-        xs_lo = [ln.match_x_range[0] for ln in cal.lanes] + [bx1, mlx1]
-        xs_hi = [ln.match_x_range[1] for ln in cal.lanes] + [bx2, mlx2]
+        xs_lo = [ln.match_x_range[0] for ln in cal.lanes] + [bx1]
+        xs_hi = [ln.match_x_range[1] for ln in cal.lanes] + [bx2]
         self._crop_x0 = min(xs_lo) if precrop else 0
         self._crop_x1 = max(xs_hi) if precrop else None  # None -> full width
 
@@ -154,8 +142,6 @@ class Preprocessor:
         x0 = self._crop_x0
         bx1, by1, bx2, by2 = cal.beat_roi
         beat_extract = CHANNEL_EXTRACTORS[cal.beat_channel]
-        mlx1, mlx2 = cal.measure_line_x_range
-        ml_extract = CHANNEL_EXTRACTORS[cal.measure_line_channel]
         try:
             idx = 0
             while True:
@@ -185,21 +171,13 @@ class Preprocessor:
                     lanes.append(LaneFrame(
                         index=ln.index,
                         color=ln.color,
-                        detection_channel=ln.detection_channel,
                         detection_roi=det,
                         matching_roi=mat,
-                        match_x_origin=ln.match_x_range[0],
-                        x_range=ln.x_range,
-                        match_x_range=ln.match_x_range,
                     ))
 
                 # --- beat ROI -----------------------------------------------
                 beat = beat_extract(np.ascontiguousarray(
                     work[by1:by2, bx1 - x0:bx2 - x0]))
-
-                # --- measure line ROI (full playfield width, single channel) -
-                measure = ml_extract(np.ascontiguousarray(
-                    work[t:b, mlx1 - x0:mlx2 - x0]))
 
                 yield PreprocessedFrame(
                     frame_index=idx,
@@ -207,7 +185,6 @@ class Preprocessor:
                     roi_y_origin=t,
                     lanes=lanes,
                     beat_roi=beat,
-                    measure_roi=measure,
                 )
                 idx += 1
             self._frame_count = idx
@@ -240,38 +217,3 @@ class Preprocessor:
         if abs(fps - self.cal.fps) > 0.5:
             print(f"[preprocessor] WARNING: video fps {fps:.2f} != configured "
                   f"fps {self.cal.fps} — timing will drift.")
-
-
-# =============================================================================
-# CLI: python preprocessor.py [config/song.toml]
-# =============================================================================
-
-if __name__ == "__main__":
-    import sys, time
-
-    path = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    pre = Preprocessor.from_config(path)
-    print(f"video      : {pre.cal.video_path}")
-    print(f"frame_count: {pre.frame_count}")
-    print(f"precrop    : {pre.precrop}  (X band "
-          f"{pre._crop_x0}..{pre._crop_x1})")
-    print(f"channels   : {pre._channels}")
-
-    t0 = time.time()
-    n = 0
-    first = None
-    for pf in pre:
-        if first is None:
-            first = pf
-        n += 1
-    dt = time.time() - t0
-
-    print(f"\niterated {n} frames in {dt:.2f}s "
-          f"({n / dt:.0f} fps preprocessing throughput)")
-    if first:
-        ln = first.lanes[0]
-        print(f"frame 0 @ {first.timestamp_ms:.2f}ms  roi_y_origin="
-              f"{first.roi_y_origin}")
-        print(f"  L1 detection_roi {ln.detection_roi.shape} {ln.detection_roi.dtype}"
-              f"  matching_roi {ln.matching_roi.shape}")
-        print(f"  beat_roi {first.beat_roi.shape} {first.beat_roi.dtype}")

@@ -55,11 +55,7 @@ self-contained and easy to sweep in a test.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
@@ -343,39 +339,3 @@ class MeasureLineTracker:
             return None
         cf = fb + (self.line_y - yb) / sp
         return BarlineEvent(cf, cf / self.fps * 1000.0, sb, extrapolated=True)
-
-
-# =============================================================================
-# CLI: python measureline.py [config/song.toml]
-# =============================================================================
-
-if __name__ == "__main__":
-    from layer2.preprocessor import Preprocessor
-    from layer3.stage1 import ProjectionDetector
-
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    pre = Preprocessor.from_config(cfg)
-    s1 = ProjectionDetector(pre.cal)
-    mld = MeasureLineDetector(pre.cal)
-    mlt = MeasureLineTracker(pre.cal)
-
-    barlines: list[BarlineEvent] = []
-    for pf in pre:
-        s1r = s1.detect_frame(pf)
-        barlines.extend(mlt.step(pf.frame_index, mld.detect_frame(s1r)))
-    barlines.extend(mlt.flush())
-    barlines.sort(key=lambda e: e.cross_frame)
-
-    print(f"=== Layer 3 measure-line detection: {len(barlines)} bar lines ===")
-    if len(barlines) >= 2:
-        iv = np.diff([b.cross_frame for b in barlines])
-        extr = sum(1 for b in barlines if b.extrapolated)
-        print(f"interval (frames): median={np.median(iv):.1f}  "
-              f"mean={iv.mean():.2f}  std={iv.std():.2f}  "
-              f"min={iv.min():.1f}  max={iv.max():.1f}")
-        print(f"extrapolated crossings: {extr}/{len(barlines)}")
-    print(f"\nfirst 8 bar lines:")
-    for b in barlines[:8]:
-        flag = " [extrap]" if b.extrapolated else ""
-        print(f"  f{b.cross_frame:8.2f}  {b.ms:9.1f}ms  "
-              f"strength={b.strength:.0f}{flag}")

@@ -96,7 +96,7 @@ def snap_tick(raw_tick: float,
 
 
 # =============================================================================
-# Helpers used by Layer4Pipeline
+# Helpers used by Layer 4 conversion
 # =============================================================================
 
 def snap_with_local_context(raw_ticks: list[float],

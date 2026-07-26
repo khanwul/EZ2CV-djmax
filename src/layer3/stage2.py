@@ -32,11 +32,7 @@ experiment, not for the current pipeline.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cv2
 import numpy as np
@@ -224,41 +220,3 @@ class TemplateMatcher:
         if template_key != "lntail":
             return True
         return y_top <= self.cal.tail_search_y_max
-
-
-# =============================================================================
-# CLI: python stage2.py [config/song.toml] [frame_index]
-# =============================================================================
-
-if __name__ == "__main__":
-    from layer2.preprocessor import Preprocessor
-    from layer3.stage1 import ProjectionDetector
-
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    want = int(sys.argv[2]) if len(sys.argv) > 2 else 7
-
-    pre = Preprocessor.from_config(cfg)
-    s1 = ProjectionDetector(pre.cal)
-    s2 = TemplateMatcher(pre.cal)
-
-    for pf in pre:
-        if pf.frame_index != want:
-            continue
-        s1_res = s1.detect_frame(pf)
-        s2_res = s2.match_frame(pf, s1_res)
-        print(f"--- frame {pf.frame_index} @ {pf.timestamp_ms:.2f}ms ---")
-        for r1, r2 in zip(s1_res, s2_res):
-            kept = len(r2.matches)
-            print(f"L{r2.lane_index+1} ({r2.color}): "
-                  f"{len(r1.runs)} run(s) -> {kept} confirmed")
-            for m in r2.matches:
-                print(f"    {m.type:7s} y_top={m.y_top:3d} score={m.score:.3f} "
-                      f"(from {m.source_run.kind} run len={m.source_run.length})")
-            for run in r1.runs:
-                fy0 = run.y_start + r1.roi_y_origin
-                fy1 = run.y_end + r1.roi_y_origin
-                confirmed = any(m.source_run is run for m in r2.matches)
-                if not confirmed:
-                    print(f"    REJECTED run frameY[{fy0},{fy1}] "
-                          f"len={run.length} ({run.kind})")
-        break

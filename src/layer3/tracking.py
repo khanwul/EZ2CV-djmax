@@ -33,19 +33,12 @@ Output: RawNote objects, ms-based. Tick conversion / snapping is Layer 4.
 
 from __future__ import annotations
 
-import sys
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
 from layer1.calibration import Calibration
-from layer3.stage2 import Stage2Result
-
-
 # =============================================================================
 # Data structures
 # =============================================================================
@@ -490,46 +483,3 @@ def merge_duplicate_triggers(events, merge_window_ms: float = 6.0):
             last[key] = len(kept)
             kept.append(ev)
     return kept
-
-
-# =============================================================================
-# CLI: python tracking.py [config/song.toml]  — runs the full Layer 3 pipeline
-# =============================================================================
-
-if __name__ == "__main__":
-    from layer2.preprocessor import Preprocessor
-    from layer3.stage1 import ProjectionDetector
-    from layer3.stage2 import TemplateMatcher
-
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    pre = Preprocessor.from_config(cfg)
-    s1 = ProjectionDetector(pre.cal)
-    s2 = TemplateMatcher(pre.cal)
-    tracker = NoteTracker(pre.cal)
-    lnsm = LongnoteStateMachine(pre.cal)
-
-    notes = []
-    for pf in pre:
-        s2r = s2.match_frame(pf, s1.detect_frame(pf))
-        for ev in sorted(tracker.step(pf.frame_index, s2r), key=lambda e: e.ms):
-            n = lnsm.feed(ev)
-            if n:
-                notes.append(n)
-    for ev in sorted(tracker.flush(), key=lambda e: e.ms):
-        n = lnsm.feed(ev)
-        if n:
-            notes.append(n)
-    notes.extend(lnsm.flush())
-    notes.sort(key=lambda n: (n.trigger_ms, n.lane))
-
-    taps = sum(1 for n in notes if n.type == "tap")
-    lns = sum(1 for n in notes if n.type == "longnote")
-    extr = sum(1 for n in notes if n.extrapolated)
-    print(f"=== Layer 3 raw output: {len(notes)} notes "
-          f"({taps} tap, {lns} longnote; {extr} extrapolated) ===")
-    print(f"orphan tails dropped: {lnsm.orphan_tails}\n")
-    for n in notes:
-        dur = f" dur={n.end_ms - n.trigger_ms:6.1f}ms" if n.end_ms else ""
-        flag = " [extrap]" if n.extrapolated else ""
-        print(f"  {n.trigger_ms:8.1f}ms  L{n.lane+1}  {n.type:8s} "
-              f"{n.color:5s} conf={n.confidence:.3f}{dur}{flag}")

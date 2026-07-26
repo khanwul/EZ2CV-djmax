@@ -37,11 +37,7 @@ from __future__ import annotations
 
 import json
 import math
-import sys
-from dataclasses import asdict
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from layer3 import Layer3Result
 from layer4 import Layer4Result, ChartNote
@@ -222,30 +218,3 @@ def write_all(l3: Layer3Result, l4: Layer4Result, *,
     _dump(serialize_raw(l3, song_name=song_name), raw_path)
     _dump(serialize_chart(l4, song_name=song_name), chart_path)
     return raw_path, chart_path
-
-
-# =============================================================================
-# CLI: python layer5.py [config/song.toml] — runs the full L3+L4+L5 chain
-# =============================================================================
-
-if __name__ == "__main__":
-    import time
-
-    from layer3 import Layer3Pipeline
-
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    song = song_name_from_config(cfg)
-
-    t0 = time.time()
-    l3 = Layer3Pipeline.from_config(cfg).run()
-    print(f"\n[layer 3 done in {time.time() - t0:.0f}s]")
-    print(l3.summary(), "\n")
-
-    t0 = time.time()
-    l4 = Layer4Result.from_layer3(l3)
-    print(f"[layer 4 done in {time.time() - t0:.2f}s]")
-    print(l4.summary(), "\n")
-
-    raw_path, chart_path = write_all(l3, l4, song_name=song)
-    print(f"[layer 5] wrote {raw_path}")
-    print(f"[layer 5] wrote {chart_path}")

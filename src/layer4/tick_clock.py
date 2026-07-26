@@ -238,17 +238,6 @@ class TickClock:
         seg_ms = self.segment_start_ms[i]
         return seg_ms + seg.ms_at(tick, tick_resolution=self.tick_resolution)
 
-    # ------------------------------------------------------------------ #
-    def bpm_at_ms(self, ms: float) -> float:
-        i = self._seg_for_ms(ms)
-        seg = self.segments[i]
-        if seg.is_constant:
-            return seg.bpm_start
-        T = seg.duration_ms(tick_resolution=self.tick_resolution)
-        t = ms - self.segment_start_ms[i]
-        return seg.bpm_start + (seg.bpm_end - seg.bpm_start) * t / T
-
-
 # =============================================================================
 # CLI: python tick_clock.py — quick numerical sanity check
 # =============================================================================

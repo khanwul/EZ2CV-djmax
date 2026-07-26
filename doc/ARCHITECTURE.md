@@ -1,14 +1,12 @@
 # EZ2CV Architecture
 
-A 5-layer computer-vision pipeline that takes an EZ2ON REBOOT : R gameplay video and reconstructs the chart (JSON). Every diagram below renders as Mermaid in GitHub/VSCode; the same diagrams are exported as static SVG under [doc/svg/](svg/).
-
-> To re-export a diagram as SVG after editing: `mmdc -i doc/ARCHITECTURE.md -o doc/svg/diagram.svg -t neutral -b transparent` (requires system `mermaid-cli`).
+A 5-layer computer-vision pipeline that takes an EZ2ON REBOOT : R gameplay video and reconstructs the chart (JSON). Every diagram below renders as Mermaid in GitHub/VSCode.
 
 ---
 
 ## 1. End-to-end pipeline
 
-Layer 3 decodes the video exactly once and produces ms-based raw data; everything after that is in-memory transformation (Layer 4) and serialization (Layer 5). Layers 1 and 2 are effectively setup. _Static SVG: [1-pipeline-overview.svg](svg/1-pipeline-overview.svg)_
+Layer 3 decodes the video exactly once and produces ms-based raw data; everything after that is in-memory transformation (Layer 4) and serialization (Layer 5). Layers 1 and 2 are effectively setup.
 
 ```mermaid
 flowchart LR
@@ -81,7 +79,7 @@ Key design decisions:
 
 ## 2. Config resolution chain (Layer 1)
 
-Three TOML tiers collapse into a single `Calibration` object. No layer below this one reads TOML directly. _Static SVG: [2-config-chain.svg](svg/2-config-chain.svg)_
+Three TOML tiers collapse into a single `Calibration` object. No layer below this one reads TOML directly.
 
 ```mermaid
 flowchart TD
@@ -122,7 +120,7 @@ To calibrate a new resolution, add `profiles/<W>x<H>/<keymode>.toml`. Only `5k @
 
 ## 3. Layer 2 → Layer 3 data fan-out
 
-A single `PreprocessedFrame` branches into three independent paths. _Static SVG: [3-layer3-fanout.svg](svg/3-layer3-fanout.svg)_
+A single `PreprocessedFrame` branches into three independent paths.
 
 ```mermaid
 flowchart LR
@@ -131,7 +129,6 @@ flowchart LR
         det["LaneFrame.detection_roi<br/><i>tight single-channel</i>"]
         match["LaneFrame.matching_roi<br/><i>wider BGR (±roi_x_margin)</i>"]
         beat_roi["beat_roi<br/><i>POW LED region</i>"]
-        meas_roi["measure_roi<br/><i>full-playfield-width 1ch</i>"]
     end
 
     subgraph NOTE["note path"]
@@ -152,7 +149,6 @@ flowchart LR
     det     --> s1
     match   --> s2
     beat_roi --> bd
-    meas_roi --> md
     s1 -. "reuses<br/>per-lane<br/>projection" .-> md
 
     tr --> notes[/"list[RawNote]"/]:::out
@@ -181,7 +177,7 @@ Design invariants:
 
 ## 4. Layer 4 — ms → tick algorithm flow
 
-Layer 4 consumes Layer 3's ms-domain result, decides BPM / time signature / grid, and converts everything to ticks. Module decomposition is intentionally small — `bpm_estimator` and `quantizer` are pure-function modules. _Static SVG: [4-layer4-algorithm.svg](svg/4-layer4-algorithm.svg)_
+Layer 4 consumes Layer 3's ms-domain result, decides BPM / time signature / grid, and converts everything to ticks. Module decomposition is intentionally small — `bpm_estimator` and `quantizer` are pure-function modules.
 
 ```mermaid
 flowchart TD
@@ -199,7 +195,7 @@ flowchart TD
         b2["octave-fold + clamp to [min,max]"]
         b3["run-length segments in PERIOD domain<br/>(rel 1.3% + frame-jitter floor<br/>+ magnitude-gated lone-spike guard)"]
         b1 --> b2 --> b3
-        fb["fallback → bpm_estimator_fixed.py<br/>(beats, interval-domain, Jensen-corrected)<br/>when per-measure BPM zig-zags ±2×"]
+        fb["fallback → bpm_estimator.py<br/>(beats, interval-domain, Jensen-corrected)<br/>when per-measure BPM zig-zags ±2×"]
         b3 -. "meters look wrong" .-> fb
     end
 
@@ -239,7 +235,7 @@ flowchart TD
 Algorithm highlights:
 
 - **Barline-derived BPM (primary).** A barline lands once per measure, so a measure's duration gives its tempo directly (`beats_per_measure · 60000 / gap_ms`) — no LED-multiplier octave guess, and one sample per measure resolves a per-measure tempo staircase the beat-stream estimator cannot. Segmentation runs in the period (ms-per-beat) domain with a relative tolerance plus an absolute frame-jitter floor, and a magnitude-gated lone-spike guard absorbs ±1-frame jitter without erasing real single-measure tempo steps.
-- **Beat-stream fallback.** When the per-measure BPMs zig-zag by ±2× (the signature of a wrong assumed meter, e.g. undetected variants), the barline curve is meaningless, so the clock falls back to `bpm_estimator_fixed` — the POW-LED beat estimator, which uses the interval-domain mean (`60000 / mean(interval)`) to dodge the convex (Jensen) upward bias of `mean(60000/interval)`, plus a median-filtered change-point detector, octave fold, and endpoint clamp.
+- **Beat-stream fallback.** When the per-measure BPMs zig-zag by ±2× (the signature of a wrong assumed meter, e.g. undetected variants), the barline curve is meaningless, so the clock falls back to `bpm_estimator` — the POW-LED beat estimator, which uses the interval-domain mean (`60000 / mean(interval)`) to dodge the convex (Jensen) upward bias of `mean(60000/interval)`, plus a median-filtered change-point detector, octave fold, and endpoint clamp.
 - **Variant detection (pervasive meters).** Variants are found by `barline_reconstruct`, not `time_sig`: each detected barline bounds a single measure, so a gap that is itself a plausible meter (≤ 6 beats) is one measure of that length, and a length that recurs often enough is trusted as a real meter (cost 0) while a one-off is droppable as a beat-count artifact. This recovers a 3/4 + pervasive 5/4·6/4 chart (JUSTITIA) instead of shredding every long gap into the global meter.
 - **Piecewise-linear BPM / closed form.** A gradual BPM change is a single segment evaluated in closed form; constant BPM collapses to slope=0.
 - **Negative ticks.** Pickup notes within one measure before the first barline are preserved with negative tick values.
@@ -250,7 +246,7 @@ Algorithm highlights:
 
 ## 5. Core data types
 
-The dataclasses that cross layer boundaries. All plain dataclasses — no inheritance, no ORM. _Static SVG: [5-data-model.svg](svg/5-data-model.svg)_
+The dataclasses that cross layer boundaries. All plain dataclasses — no inheritance, no ORM.
 
 ```mermaid
 classDiagram
@@ -288,7 +284,6 @@ classDiagram
         +ms: float
         +lanes: list~LaneFrame~
         +beat_roi: ndarray
-        +measure_roi: ndarray
     }
 
     class LaneFrame {
@@ -403,10 +398,10 @@ main.py:run()
 ├── layer4.Layer4Result.from_layer3(l3)                 → Layer4Result
 │   └─ barline_reconstruct (grid + TS + variants)
 │      → bpm_estimator_barline (BPM from measure spacing,
-│        fallback bpm_estimator_fixed) → tick_clock
+│        fallback bpm_estimator) → tick_clock
 │      → time_sig.barline_ticks → quantizer
 └── layer5.write_all(l3, l4)                            → raw.json, chart.json
     └─ optional: visualize_chart.render(...)            → chart_visual.png
 ```
 
-Each layer's `__main__` block is a standalone debug CLI (`uv run python src/layerN/*.py "config/*.toml"`). Production runs go through `src/main.py`.
+Production runs go through `src/main.py`; numerical self-checks remain in the pure algorithm modules.

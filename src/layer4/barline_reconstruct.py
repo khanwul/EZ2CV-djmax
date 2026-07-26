@@ -56,11 +56,7 @@ that also hands ``barline_ticks`` a gap-free measure grid.
 
 from __future__ import annotations
 
-import sys
-from dataclasses import dataclass, field
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -101,20 +97,6 @@ class ReconstructResult:
     beat_indices: list[int]                 # beat ordinal of each output barline
     measure_meters: list[int]               # beats-per-measure for measure 0..N-1
     global_meter: int                       # M, beats per measure
-
-    @property
-    def inferred_count(self) -> int:
-        return sum(1 for b in self.barlines if b.extrapolated)
-
-    def summary(self) -> str:
-        return (f"=== barline reconstruct — {self.time_signature} global, "
-                f"{len(self.variants)} variant run(s) ===\n"
-                f"  barlines       : {len(self.barlines)} "
-                f"({self.inferred_count} inferred, "
-                f"{len(self.barlines) - self.inferred_count} observed)\n"
-                f"  outliers (FP)  : {len(self.outliers)}\n"
-                f"  measures       : {len(self.measure_meters)}")
-
 
 # =============================================================================
 # Beat-count indexing
@@ -402,35 +384,3 @@ def reconstruct_barlines(barlines: list[BarlineEvent],
         measure_meters=measure_meters,
         global_meter=M,
     )
-
-
-# =============================================================================
-# CLI: python barline_reconstruct.py [config/song.toml]
-# =============================================================================
-
-if __name__ == "__main__":
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-
-    from layer3 import Layer3Pipeline
-    l3 = Layer3Pipeline.from_config(cfg).run()
-    if len(l3.barlines) < 2 or len(l3.beats) < 2:
-        print("not enough barlines/beats"); raise SystemExit(0)
-
-    res = reconstruct_barlines(l3.barlines, l3.beats)
-    print(res.summary())
-    print(f"\nglobal meter M = {res.global_meter} beats/measure")
-    if res.variants:
-        print("variant measures:")
-        for v in res.variants:
-            print(f"  m{v.start_measure}..{v.end_measure}: {v.time_sig}")
-    else:
-        print("variant measures: none")
-
-    iv = np.diff([b.ms for b in res.barlines])
-    print(f"\ninput barlines={len(l3.barlines)} -> reconstructed="
-          f"{len(res.barlines)} ({res.inferred_count} inferred), "
-          f"dropped {len(res.outliers)} FP")
-    if len(iv):
-        print(f"reconstructed inter-barline ms: median={np.median(iv):.1f} "
-              f"std/median={np.std(iv)/max(np.median(iv),1e-9):.3f} "
-              f"(low std/median = regular grid)")

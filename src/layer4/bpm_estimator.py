@@ -38,11 +38,6 @@ to clear the ±2 % combo-count gate on all three test songs.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 import numpy as np
 
 from layer3.beat import BeatEvent
@@ -261,13 +256,16 @@ def _fit_segment(times: np.ndarray, intervals: np.ndarray,
             if factor != 1.0:
                 seg_ints = seg_ints / factor
 
+    valid_ints = seg_ints[seg_ints > 0]
+    bpm_const = (60_000.0 / float(np.mean(valid_ints))) if len(valid_ints) else 0.0
     bpms = 60_000.0 / np.where(seg_ints > 0, seg_ints, np.nan)
     valid = np.isfinite(bpms)
     mids, bpms = mids[valid], bpms[valid]
 
     if len(bpms) < 2:
-        b = float(np.mean(bpms)) if len(bpms) else 0.0
-        return BPMDraft(start_ms, end_ms, b, b)
+        if min_bpm > 0 and max_bpm > 0:
+            bpm_const = float(np.clip(bpm_const, min_bpm, max_bpm))
+        return BPMDraft(start_ms, end_ms, bpm_const, bpm_const)
 
     # (2) linear fit -------------------------------------------------------
     slope, intercept = np.polyfit(mids, bpms, 1)
@@ -284,6 +282,7 @@ def _fit_segment(times: np.ndarray, intervals: np.ndarray,
                               np.percentile(bpms, ENDPOINT_PERCENTILE))
     b0 = float(np.clip(b0, clamp_lo, clamp_hi))
     b1 = float(np.clip(b1, clamp_lo, clamp_hi))
+    bpm_const = float(np.clip(bpm_const, clamp_lo, clamp_hi))
 
     # (4) near-constant collapse ------------------------------------------
     # Collapse to a single BPM when the fitted slope is within SLOPE_ZERO_BPM
@@ -293,8 +292,7 @@ def _fit_segment(times: np.ndarray, intervals: np.ndarray,
     # clamp (the bug that gave GEHENNA a 225 > max_bpm=222.22 segment).
     if abs(b1 - b0) < max(SLOPE_ZERO_BPM,
                           RELATIVE_SLOPE_TOL * max(abs(b0), abs(b1))):
-        m = float(np.clip(np.median(bpms), clamp_lo, clamp_hi))
-        return BPMDraft(start_ms, end_ms, m, m)
+        return BPMDraft(start_ms, end_ms, bpm_const, bpm_const)
     return BPMDraft(start_ms, end_ms, b0, b1)
 
 
@@ -524,24 +522,10 @@ def build_tick_clock(beats: list[BeatEvent], *,
 
 
 # =============================================================================
-# CLI: python bpm_estimator.py [config/song.toml]
+# Self-check: PYTHONPATH=src python -m layer4.bpm_estimator
 # =============================================================================
 
 if __name__ == "__main__":
-    from layer3 import Layer3Pipeline
-
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    l3 = Layer3Pipeline.from_config(cfg).run(progress=False)
-    window = ((l3.barlines[0].ms, l3.barlines[-1].ms)
-              if l3.barlines else None)
-    drafts = estimate_bpm_drafts(l3.beats,
-                                 min_bpm=l3.cal.min_bpm,
-                                 max_bpm=l3.cal.max_bpm,
-                                 active_window_ms=window)
-    print(f"=== BPM estimate: {len(drafts)} segment(s) "
-          f"from {len(l3.beats)} beats "
-          f"(active window: {window}) ===")
-    for d in drafts:
-        kind = "const" if d.is_constant else "ramp "
-        print(f"  {kind}  {d.start_ms:9.1f}..{d.end_ms:9.1f}ms  "
-              f"bpm {d.bpm_start:7.2f} → {d.bpm_end:7.2f}")
+    draft = _fit_segment(np.array([0.0, 499.0, 1000.0]),
+                         np.array([499.0, 501.0]), 0, 2, 100.0, 140.0)
+    assert draft.bpm_start == draft.bpm_end == 120.0

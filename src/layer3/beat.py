@@ -46,13 +46,7 @@ Output: BeatEvent objects, ms-based. Tempo/tick interpretation is Layer 4.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import numpy as np
 
 from layer1.calibration import Calibration
 from layer2.preprocessor import PreprocessedFrame
@@ -209,51 +203,3 @@ class BeatDetector:
         else:
             a = self.amp_smoothing
             self._flash_amp = (1 - a) * self._flash_amp + a * strength
-
-    # ------------------------------------------------------------------ #
-    # diagnostics — Layer 4 does the real tempo work
-    # ------------------------------------------------------------------ #
-    def intervals_frames(self) -> np.ndarray:
-        """Inter-beat gaps in frames."""
-        if len(self.beats) < 2:
-            return np.array([])
-        return np.diff([b.frame_index for b in self.beats]).astype(float)
-
-    def median_interval_frames(self) -> float:
-        iv = self.intervals_frames()
-        return float(np.median(iv)) if len(iv) else 0.0
-
-    def implied_flash_rate_bpm(self) -> float:
-        """BPM *if* the LED flashes once per beat (Layer 4 resolves the multiple)."""
-        p = self.median_interval_frames()
-        return (60.0 * self.cal.fps / p) if p > 0 else 0.0
-
-
-# =============================================================================
-# CLI: python beat.py [config/song.toml]
-# =============================================================================
-
-if __name__ == "__main__":
-    from layer2.preprocessor import Preprocessor
-
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    pre = Preprocessor.from_config(cfg)
-    det = BeatDetector(pre.cal)
-    for pf in pre:
-        det.step(pf)
-    det.finish()                                   # flush a trailing candidate
-
-    iv = det.intervals_frames()
-    print(f"=== Layer 3 beat detection: {len(det.beats)} beats ===")
-    if len(iv):
-        print(f"interval (frames): median={np.median(iv):.1f}  "
-              f"mean={iv.mean():.2f}  std={iv.std():.2f}  "
-              f"min={iv.min():.0f}  max={iv.max():.0f}")
-        print(f"implied flash rate : {det.implied_flash_rate_bpm():.1f} BPM "
-              f"(1 flash/beat)  |  {det.implied_flash_rate_bpm() / 2:.1f} BPM "
-              f"(1 flash/half-beat)")
-        irregular = int((np.abs(iv - np.median(iv)) > 3).sum())
-        print(f"irregular intervals (>3 frames off median): {irregular}")
-    print(f"\nfirst 10 beats:")
-    for b in det.beats[:10]:
-        print(f"  f{b.frame_index:<5d} {b.ms:9.1f}ms  strength={b.strength:.1f}")

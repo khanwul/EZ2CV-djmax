@@ -5,8 +5,7 @@ Takes a single song TOML, runs Layer 1 -> 2 -> 3 -> 4 -> 5 sequentially, and
 produces the final artifacts (``out/<song>/<song>_raw.json``,
 ``<song>_chart.json``) along with optional visualizations.
 
-Each layer's ``__main__`` block is for standalone module debugging; this file
-is the single entry point used to run the full pipeline in one shot.
+This is the single entry point used to run the full pipeline in one shot.
 
 Usage
 -----

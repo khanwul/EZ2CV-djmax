@@ -81,7 +81,6 @@ diff_threshold   = 2.0
 # adjacent rows recovers the line's full energy regardless of straddle phase.
 # Validated on 4 songs (incl. long-note-heavy Dream Walker): 94-96% recall, FP~0.
 #
-#   channel              : which single-channel image to inspect (gray suits the white line)
 #   lit_energy_threshold : a lane's 2-row energy sum must exceed this to be "lit"
 #   min_brightness       : single-row band-mean lower bound (rejects near-background)
 #   max_brightness       : reject note-bright bands (~218 on this skin)
@@ -89,7 +88,6 @@ diff_threshold   = 2.0
 #                          this is what still rejects long-note bodies
 #   lane_slack           : allow this many lanes to miss the coincidence (occlusion)
 [measure_line]
-channel              = "gray"
 # Calibrated on the 4-song validation set (see measureline_detection_findings):
 # a thin full-width line's single-row band mean is ~p10=116..p50=127 when it lands
 # cleanly on one row, but dips to ~55-90 in sub-pixel-split frames. The energy sum

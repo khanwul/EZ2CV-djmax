@@ -7,7 +7,7 @@ measure's duration gives its tempo DIRECTLY:
 
     bpm[m] = beats_per_measure * 60000 / (barline[m+1] − barline[m])
 
-Why this beats the beat-stream estimator (``bpm_estimator_fixed``)
+Why this beats the beat-stream estimator (``bpm_estimator``)
 -----------------------------------------------------------------
 1. **No LED-multiplier ambiguity.** The beat estimator must guess whether the
    POW LED flashes on beats, half-beats or double-beats (the octave fold). The
@@ -29,7 +29,7 @@ Robustness
   per-measure BPM into ``[min_bpm, max_bpm]`` and clamping to those bounds.
 * Each constant segment's level is the drift-free INTERVAL-domain span tempo
   (total beats × 60000 / total span), not the convex, upward-biased mean of the
-  per-measure BPMs — the same Jensen correction ``bpm_estimator_fixed`` applies.
+  per-measure BPMs — the same Jensen correction ``bpm_estimator`` applies.
 
 Scope
 -----
@@ -42,18 +42,13 @@ falls back to it when the two disagree.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 import numpy as np
 
 from layer3.beat import BeatEvent
 from layer3.measureline import BarlineEvent
 from layer4.tick_clock import BPMDraft, TickClock
+from layer4 import bpm_estimator as beat_est
 from layer4.bpm_estimator import _fold_to_range, SLOPE_ZERO_BPM
-from layer4 import bpm_estimator_fixed as beat_est
 
 
 # =============================================================================

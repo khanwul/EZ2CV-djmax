@@ -22,11 +22,7 @@ tracking, no longnote pairing.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
@@ -173,33 +169,3 @@ def _find_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     starts = np.flatnonzero(diff == 1)
     ends = np.flatnonzero(diff == -1)
     return list(zip(starts.tolist(), ends.tolist()))
-
-
-# =============================================================================
-# CLI: python stage1.py [config/song.toml] [frame_index]
-# =============================================================================
-
-if __name__ == "__main__":
-    from layer2.preprocessor import Preprocessor
-
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config/song.toml"
-    want = int(sys.argv[2]) if len(sys.argv) > 2 else 150
-
-    pre = Preprocessor.from_config(cfg)
-    det = ProjectionDetector(pre.cal)
-    print(f"thresholds per lane: {det._thresholds}")
-    print(f"short_run_max={det.short_run_max}px  min_run_px={det.min_run_px}px\n")
-
-    for pf in pre:
-        if pf.frame_index != want:
-            continue
-        print(f"--- frame {pf.frame_index} @ {pf.timestamp_ms:.2f}ms ---")
-        for res in det.detect_frame(pf):
-            print(f"L{res.lane_index+1} ({res.color}): {len(res.runs)} run(s)")
-            for r in res.runs:
-                fy0 = r.y_start + res.roi_y_origin
-                fy1 = r.y_end + res.roi_y_origin
-                print(f"    {r.kind:5s} ROIy[{r.y_start:3d},{r.y_end:3d}] "
-                      f"frameY[{fy0},{fy1}] len={r.length:3d} "
-                      f"peak={r.peak_brightness:.0f} mean={r.mean_brightness:.0f}")
-        break
