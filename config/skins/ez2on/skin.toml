@@ -18,9 +18,7 @@ reference_resolution = [1920, 1080]   # resolution the template PNGs were cut at
 "4k" = ["white", "cyan", "cyan", "white"]
 "5k" = ["white", "cyan", "white", "cyan", "white"]
 "6k" = ["white", "cyan", "white", "white", "cyan", "white"]
-# "8k" = ["white", "cyan", "white", "cyan", "cyan", "white", "cyan", "white"]
-# NOTE: 4k/6k/8k patterns are placeholders — verify against the real skin
-#       before using those modes. 5k is the calibrated/verified one.
+"8k" = ["white", "cyan", "white", "cyan", "cyan", "white", "cyan", "white"]
 
 # --- templates, grouped by note color ----------------------------------------
 # Filenames only. The resolver builds the full path as:
@@ -65,7 +63,6 @@ stage1_brightness = 60.0   # Stage 1 gate: a row's MEAN value (0-255) on its
 # The ROI *coordinates* are pixel geometry -> they live in the profile.
 [beat_indicator]
 channel          = "green"
-detection_method = "diff"
 diff_threshold   = 2.0
 
 # --- measure line detection --------------------------------------------------

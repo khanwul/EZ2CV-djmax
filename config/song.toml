@@ -11,8 +11,8 @@
 
 [setup]
 skin               = "ez2on"        # -> config/skins/ez2on/
-key_mode           = "5k"           # -> lane_colors["5k"], templates dir 5k/
-display_resolution = "1920x1080"    # -> config/profiles/1920x1080/5k.toml
+key_mode           = "5k"           # 4k | 5k | 6k | 8k
+display_resolution = "1920x1080"    # -> profiles/1920x1080/<key_mode>.toml
 
 [capture]
 video_path = ""                     # path to the gameplay video (abs, or relative to this file)

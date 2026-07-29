@@ -1,11 +1,19 @@
 [project]
 name = "ez2cv"
 version = "0.1.0"
-description = "Add your description here"
+description = "Extract rhythm-game chart data from EZ2ON gameplay videos"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "numpy>=2.4.6",
     "opencv-python>=4.13.0.92",
     "matplotlib>=3.9.0",
+    "pillow>=12.2.0",
 ]
+
+[project.scripts]
+ez2cv = "ez2cv.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"

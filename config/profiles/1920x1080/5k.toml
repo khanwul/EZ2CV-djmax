@@ -27,7 +27,6 @@ lane_width = 82                   # == note width; the visual/detection lane
 
 [judgment]
 line_y                 = 824      # center of judgment bar at HIGHEST position
-oscillation_range      = 2        # +-2px bar movement (informational)
 note_height            = 22       # note (and template) height in px
 trigger_template_y_top = 802      # = line_y - note_height. Resolver verifies this.
 tail_release_offset_px = 13       # extra descent past the tail-sprite bottom before a
@@ -46,8 +45,8 @@ roi_x_margin      = 5             # matching ROI = lane x_range +/- this each si
 tail_search_y_max = 790           # don't search tail edges below this y
 
 [measurements]
+note_speed           = 8.0         # this geometry/speed measurement is speed-locked
 pixels_per_frame    = 33.0        # note vertical movement (median; mean 32.7, std 6.8)
-frames_per_traverse = 25          # ~frames from playfield top to judgment line
 note_width_px       = 82          # resolver validates against template width
 note_height_px      = 22          # resolver validates against template height
 min_longnote_px     = 35          # head->tail gap in px below this -> tap, not longnote

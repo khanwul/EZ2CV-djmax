@@ -14,7 +14,9 @@ EZ2CV runs an OpenCV-based computer vision pipeline to recognize note patterns f
 
 - Python 3.14
 - [uv](https://github.com/astral-sh/uv) for dependency management
-- Currently, only the **5K key mode at 1920×1080** resolution is fully calibrated.
+- The pipeline supports **4K, 5K, 6K, and 8K** profiles at 1920×1080.
+- Only **5K** has been verified against real recordings; recalibrate the bundled
+  bootstrap geometry for other modes when your panel layout differs.
 
 ## Setup
 
@@ -32,14 +34,15 @@ video settings
 
 ingame settings
 - **No input should be provided during gameplay.** This project has been developed on the assumption that there is no input during gameplay, and this has a significant impact on accuracy. We recommend recording your gameplay using **LIVE CTRL** mode.
-- Key Mode: 5K  
+- Key Mode: 4K / 5K / 6K / 8K
 
 - Panel Skin: PG-RESPECT (recommended)  
 Other skins can also be applied by modifying the config file(config/profiles), but the beat indicator must be clearly visible. In the case of PG-RESPECT, the beat indicator (POW) is clearly visible below the health bar, so we recommend using this skin.
 - Note Skin: EZ2ON (recommended)  
 Other skins can also be applied by modifying the config file(config/skins), but we recommend using a stick-shaped note skin with a consistent appearance(no glowing). This greatly affects image matching.
-- Note Speed: 8.0 (recommended)  
-Although the speed can be adjusted via the config file(config/song.toml), our tests showed that 8.0 achieved the highest recognition rate.
+- Note Speed: 8.0
+The bundled profiles are calibrated for 8.0. `capture.note_speed` must match the
+profile; create a recalibrated profile before using another speed.
 - other
     - judge line: old  
     The settings are based on the height of 'old'. You can change this to the height of 'new' in the config file.
@@ -54,7 +57,8 @@ Although the speed can be adjusted via the config file(config/song.toml), our te
 
 The pipeline requires note template images cropped from your gameplay recording. These are **not included** in this repository and must be prepared manually.
 
-Place the following files under `config/skins/ez2on/5k/`:
+Place the following files under `config/skins/ez2on/<key_mode>/` (for example,
+`config/skins/ez2on/6k/`):
 
 | Filename | Description |
 | -------- | ----------- |
@@ -71,10 +75,20 @@ Crop each template from a clean frame of your gameplay video — the note must b
 
 Configs live under `config/`. To analyze different songs, pass its TOML path as an argument. Use `config/song.toml` as a template for new songs.
 
-Run the full pipeline (writes `out/<song>/{raw,chart}.json`):
+Set `setup.key_mode` to `4k`, `5k`, `6k`, or `8k`. The resolver selects the
+matching geometry profile and note-template directory automatically.
+
+Run the full pipeline:
 
 ```bash
-uv run python src/main.py "config/<song>.toml"
+uv run ez2cv "config/<song>.toml"
+```
+
+The raw detection result is written before chart inference. Rebuild a chart
+without decoding the video again:
+
+```bash
+uv run ez2cv "out/<song>/<song>_raw.json" --from-raw
 ```
 
 ## Config layout
@@ -90,8 +104,14 @@ uv run python src/main.py "config/<song>.toml"
 
 Two JSON files are written under `out/<song>/`:
 
-- `<song>_raw.json` — Layer 3 result (ms-based notes, beats, barlines)
-- `<song>_chart.json` — Layer 4 result (tick-based chart with BPM and time signature)
+- `<song>_raw.json` — reloadable ms-based detection checkpoint
+- `<song>_chart.json` — tick-based chart with BPM and time signature
+
+## Tests
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
 
 ## License
 
