@@ -58,11 +58,6 @@ The inherited pipeline writes two files under `out/<song>/`:
 
 EZ2ON-specific predicted combo statistics were removed because DJMAX scoring behavior has not been verified.
 
-## Repository relationship
-
-- Fork: <https://github.com/khanwul/EZ2CV-djmax>
-- Upstream: <https://github.com/khanwul/EZ2CV>
-
 ## License
 
 This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE) and is intended for personal, non-commercial use only.
