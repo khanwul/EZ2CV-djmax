@@ -225,7 +225,7 @@ __marimo__/
 /out/*
 # Local validation/game assets; keep them out of commits.
 /sample/*.mp4
-/config/skins/djmax/*/*.png
+/config/skins/ONGEKI/*/*.png
 measureline_calibrate.py
 /doc/game_mechanism.md
 /doc/EZ2CVtl;dr.pdf
