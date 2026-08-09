@@ -92,15 +92,31 @@ class MeasureLineConfig:
 
 @dataclass
 class LaneConfig:
-    """Everything video preprocessing needs for a single lane."""
-    index: int                          # 0-based lane index
-    color: str                          # "white" | "cyan" | ...
-    x_range: tuple[int, int]            # DETECTION ROI x (tight, == lane width)
-    match_x_range: tuple[int, int]      # MATCHING ROI x (lane +/- roi_x_margin)
-    detection_channel: str              # key into CHANNEL_EXTRACTORS
-    stage1_threshold: float             # Stage 1 brightness gate (0-255 mean)
-    matching_threshold: float           # Stage 2 template-match min score
-    templates: dict[str, np.ndarray]    # {"note","lnhead","lntail"} -> BGR image
+    """Resolved settings for one normal or overlapping logical track."""
+    index: int
+    name: str
+    role: str                           # "normal" | "overlay"
+    color: str
+    template_set: str
+    allowed_types: frozenset[str]       # "tap" | "longnote"
+    x_range: tuple[int, int]
+    match_x_range: tuple[int, int]
+    note_height: int
+    trigger_y_top: int
+    timing_offset_px: int
+    tail_release_offset_px: int
+    tail_search_y_max: int
+    min_longnote_px: int
+    include_in_consensus: bool
+    detection_channel: str
+    stage1_threshold: float
+    matching_threshold: float
+    templates: dict[str, np.ndarray]
+    mask_hue_ranges: tuple[tuple[int, int], ...] = ()
+    mask_saturation_min: int = 0
+    mask_value_min: int = 0
+    coverage_threshold: float = 0.0
+
 
 @dataclass
 class RunConfig:
@@ -126,17 +142,10 @@ class RunConfig:
     playfield_top: int
     playfield_bottom: int
     line_y: int
-    note_height: int
-    note_width: int
-    trigger_template_y_top: int
-    tail_release_offset_px: int         # extra tail descent before a longnote releases
 
-    # --- lanes ---------------------------------------------------------------
-    key_count: int
+    # --- logical tracks ------------------------------------------------------
+    normal_lane_count: int
     lanes: list[LaneConfig]
-
-    # --- matching geometry ---------------------------------------------------
-    tail_search_y_max: int
 
     # --- beat indicator ------------------------------------------------------
     beat_roi: tuple[int, int, int, int]   # (x1, y1, x2, y2)
@@ -148,7 +157,44 @@ class RunConfig:
 
     # --- measurements --------------------------------------------------------
     pixels_per_frame: float
-    min_longnote_px: int                    # head-tail gap below this -> tap
+
+    @property
+    def track_count(self) -> int:
+        return len(self.lanes)
+
+    @property
+    def key_count(self) -> int:
+        """Compatibility alias for consumers that mean all logical tracks."""
+        return self.track_count
+
+    def _normal_lane(self) -> LaneConfig:
+        return next(lane for lane in self.lanes if lane.role == "normal")
+
+    # ponytail: detector compatibility; remove after every detector reads its
+    # owning LaneConfig instead of the old global normal-note geometry.
+    @property
+    def note_height(self) -> int:
+        return self._normal_lane().note_height
+
+    @property
+    def note_width(self) -> int:
+        return self._normal_lane().templates["note"].shape[1]
+
+    @property
+    def trigger_template_y_top(self) -> int:
+        return self._normal_lane().trigger_y_top
+
+    @property
+    def tail_release_offset_px(self) -> int:
+        return self._normal_lane().tail_release_offset_px
+
+    @property
+    def tail_search_y_max(self) -> int:
+        return self._normal_lane().tail_search_y_max
+
+    @property
+    def min_longnote_px(self) -> int:
+        return self._normal_lane().min_longnote_px
 
     def summary(self) -> None:
         print(f"=== Config: {self.skin_name} / {self.key_mode} / "
@@ -167,9 +213,10 @@ class RunConfig:
               f"max_thick={self.measure_line.max_thickness}  "
               f"slack={self.measure_line.lane_slack}")
         print(f"  min_ln_px  : {self.min_longnote_px}")
-        print(f"  lanes ({self.key_count}):")
+        print(f"  tracks ({self.track_count}; normal={self.normal_lane_count}):")
         for ln in self.lanes:
-            print(f"    L{ln.index+1}: {ln.color:5s} det_x{list(ln.x_range)} "
+            print(f"    {ln.index}:{ln.name} [{ln.role}] {ln.color:5s} "
+                  f"det_x{list(ln.x_range)} "
                   f"match_x{list(ln.match_x_range)} ch={ln.detection_channel:6s} "
                   f"s1={ln.stage1_threshold} s2={ln.matching_threshold} "
                   f"tmpl={list(ln.templates)}")
@@ -222,14 +269,15 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
         raise ConfigError(
             f"profile key_mode '{profile_mode}' != song key_mode '{key_mode}'")
 
-    key_count   = profile["meta"]["key_count"]
+    normal_lane_count = int(profile["meta"]["normal_lane_count"])
     lane_colors = skin["lane_colors"].get(key_mode)
     if lane_colors is None:
         raise ConfigError(
             f"skin '{skin_name}' has no lane_colors entry for key_mode '{key_mode}'")
-    if len(lane_colors) != key_count:
+    if len(lane_colors) != normal_lane_count:
         raise ConfigError(
-            f"key_count mismatch: profile says {key_count}, skin lane_colors"
+            f"normal_lane_count mismatch: profile says {normal_lane_count}, "
+            f"skin lane_colors"
             f"['{key_mode}'] has {len(lane_colors)} entries")
 
     prof_res = tuple(profile["meta"]["display_resolution"])
@@ -244,43 +292,38 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
         _warn("non-uniform x/y scale between skin reference and profile "
               "resolution — aspect ratios differ; templates may not match.")
 
-    # --- 4. judgment / trigger geometry -------------------------------------
-    jd          = profile["judgment"]
-    line_y      = jd["line_y"]
-    note_height = jd["note_height"]
-    trigger     = jd["trigger_template_y_top"]
-    expected_trigger = line_y - note_height
-    if trigger != expected_trigger:
-        _warn(f"trigger_template_y_top={trigger} but line_y-note_height="
-              f"{expected_trigger}; check the judgment geometry.")
-    tail_release_offset = int(jd.get("tail_release_offset_px", 0))
-
-    # --- 5. resolve templates & per-lane data -------------------------------
+    # --- 4. resolve templates & logical tracks -------------------------------
     pf          = profile["playfield"]
-    lanes_cfg   = profile["lanes"]
-    field_left  = lanes_cfg["field_left"]
-    lane_width  = lanes_cfg["lane_width"]
-    center_gap  = lanes_cfg.get("center_gap", 0)
-    margin      = profile["matching"]["roi_x_margin"]
+    line_y      = int(profile["judgment"]["line_y"])
+    normal_cfg  = profile["normal_lanes"]
+    field_left  = int(normal_cfg["field_left"])
+    lane_width  = int(normal_cfg["lane_width"])
+    index_start = int(normal_cfg.get("index_start", 1))
+    margin      = int(profile["matching"].get("roi_x_margin", 0))
+    meas        = profile["measurements"]
 
     thr               = skin["thresholds"]
     matching_default  = thr["matching"]
     stage1_default    = thr["stage1_brightness"]
-    matching_by_color = thr.get("matching_by_color", {})
-    stage1_by_color   = thr.get("stage1_by_color", {})
+    matching_by_set   = thr.get("matching_by_template_set", {})
+    stage1_by_set     = thr.get("stage1_by_template_set", {})
     channel_map       = skin["detection"]["channel"]
     templates_cfg     = skin["templates"]
+    overlay_masks     = skin.get("overlay_masks", {})
     tmpl_dir          = config_root / "skins" / skin_name / key_mode
 
     frame_w, frame_h = prof_res
-    template_cache: dict[str, np.ndarray] = {}   # color->type cached by filename
+    template_cache: dict[str, np.ndarray] = {}
 
-    def _load_template(color: str, ntype: str) -> np.ndarray:
-        if color not in templates_cfg:
+    def _load_template(template_set: str, ntype: str) -> np.ndarray:
+        if template_set not in templates_cfg:
             raise ConfigError(
-                f"skin '{skin_name}' has no [templates.{color}] section "
+                f"skin '{skin_name}' has no [templates.{template_set}] section "
                 f"(needed by key_mode '{key_mode}')")
-        fname = templates_cfg[color][ntype]
+        if ntype not in templates_cfg[template_set]:
+            raise ConfigError(
+                f"template set '{template_set}' has no '{ntype}' template")
+        fname = templates_cfg[template_set][ntype]
         if fname in template_cache:
             return template_cache[fname]
         fpath = tmpl_dir / fname
@@ -296,61 +339,143 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
         template_cache[fname] = img
         return img
 
+    def _common(template_set: str, allowed_types: frozenset[str],
+                *, load_templates: bool = True):
+        if not allowed_types or not allowed_types <= {"tap", "longnote"}:
+            raise ConfigError(
+                f"invalid allowed_types {sorted(allowed_types)} for '{template_set}'")
+        if template_set not in channel_map:
+            raise ConfigError(
+                f"skin '{skin_name}' [detection.channel] has no entry for "
+                f"template set '{template_set}'")
+        channel = channel_map[template_set]
+        if channel not in CHANNEL_EXTRACTORS:
+            raise ConfigError(
+                f"unknown detection channel '{channel}' for '{template_set}' "
+                f"(valid: {sorted(CHANNEL_EXTRACTORS)})")
+        keys = []
+        if load_templates:
+            if "tap" in allowed_types:
+                keys.append("note")
+            if "longnote" in allowed_types:
+                keys.extend(("lnhead", "lntail"))
+        return (
+            channel,
+            float(stage1_by_set.get(template_set, stage1_default)),
+            float(matching_by_set.get(template_set, matching_default)),
+            {key: _load_template(template_set, key) for key in keys},
+        )
+
     lanes: list[LaneConfig] = []
     for i, color in enumerate(lane_colors):
-        x1 = field_left + i * lane_width + (center_gap if i >= key_count // 2 else 0)
+        x1 = field_left + i * lane_width
         x2 = x1 + lane_width
         mx1 = max(0, x1 - margin)
         mx2 = min(frame_w, x2 + margin)
-
-        if color not in channel_map:
-            raise ConfigError(
-                f"skin '{skin_name}' [detection.channel] has no entry for "
-                f"color '{color}'")
-        channel = channel_map[color]
-        if channel not in CHANNEL_EXTRACTORS:
-            raise ConfigError(
-                f"unknown detection channel '{channel}' for color '{color}' "
-                f"(valid: {sorted(CHANNEL_EXTRACTORS)})")
-
-        templates = {t: _load_template(color, t)
-                     for t in ("note", "lnhead", "lntail")}
+        template_set = f"normal_{color}"
+        allowed = frozenset(("tap", "longnote"))
+        channel, stage1_threshold, matching_threshold, templates = \
+            _common(template_set, allowed)
 
         lanes.append(LaneConfig(
-            index=i,
+            index=index_start + i,
+            name=f"K{i + 1}",
+            role="normal",
             color=color,
+            template_set=template_set,
+            allowed_types=allowed,
             x_range=(x1, x2),
             match_x_range=(mx1, mx2),
+            note_height=int(normal_cfg["note_height"]),
+            trigger_y_top=int(normal_cfg["trigger_y_top"]),
+            timing_offset_px=int(normal_cfg.get("timing_offset_px", 0)),
+            tail_release_offset_px=int(normal_cfg.get("tail_release_offset_px", 0)),
+            tail_search_y_max=int(normal_cfg["tail_search_y_max"]),
+            min_longnote_px=int(normal_cfg["min_longnote_px"]),
+            include_in_consensus=True,
             detection_channel=channel,
-            stage1_threshold=float(stage1_by_color.get(color, stage1_default)),
-            matching_threshold=float(matching_by_color.get(color, matching_default)),
+            stage1_threshold=stage1_threshold,
+            matching_threshold=matching_threshold,
             templates=templates,
         ))
 
-    # --- 6. validate template size against profile geometry -----------------
-    th, tw = lanes[0].templates["note"].shape[:2]
-    meas   = profile["measurements"]
-    if th != note_height:
-        _warn(f"template height {th}px != profile note_height {note_height}px")
-    if tw != meas["note_width_px"]:
-        _warn(f"template width {tw}px != profile note_width_px "
-              f"{meas['note_width_px']}px")
-    if tw != lane_width:
-        _warn(f"template width {tw}px != lane_width {lane_width}px — "
-              f"matchTemplate needs roi_x_margin>0 for slide room.")
+    for track in profile.get("overlay_tracks", []):
+        template_set = str(track["template_set"])
+        allowed = frozenset(str(value) for value in track["allowed_types"])
+        channel, stage1_threshold, matching_threshold, templates = \
+            _common(template_set, allowed, load_templates=False)
+        x1, x2 = (int(value) for value in track["x_range"])
+        track_margin = int(track.get("roi_x_margin", margin))
+        mask = overlay_masks.get(template_set)
+        if mask is None:
+            raise ConfigError(
+                f"skin '{skin_name}' has no [overlay_masks.{template_set}] section")
+        hue_ranges = tuple(tuple(int(v) for v in pair)
+                           for pair in mask["hue_ranges"])
+        lanes.append(LaneConfig(
+            index=int(track["index"]),
+            name=str(track["name"]),
+            role="overlay",
+            color=str(track["color"]),
+            template_set=template_set,
+            allowed_types=allowed,
+            x_range=(x1, x2),
+            match_x_range=(max(0, x1 - track_margin),
+                           min(frame_w, x2 + track_margin)),
+            note_height=int(track["note_height"]),
+            trigger_y_top=int(track["trigger_y_top"]),
+            timing_offset_px=int(track.get("timing_offset_px", 0)),
+            tail_release_offset_px=int(track.get("tail_release_offset_px", 0)),
+            tail_search_y_max=int(track["tail_search_y_max"]),
+            min_longnote_px=int(track["min_longnote_px"]),
+            include_in_consensus=bool(track.get("include_in_consensus", False)),
+            detection_channel=channel,
+            stage1_threshold=stage1_threshold,
+            matching_threshold=matching_threshold,
+            templates=templates,
+            mask_hue_ranges=hue_ranges,
+            mask_saturation_min=int(mask["saturation_min"]),
+            mask_value_min=int(mask["value_min"]),
+            coverage_threshold=float(mask["coverage_threshold"]),
+        ))
 
-    # --- 7. geometry sanity --------------------------------------------------
-    field_right = field_left + key_count * lane_width + center_gap
-    if field_left < 0 or field_right > frame_w:
-        raise ConfigError(
-            f"playfield x-range [{field_left},{field_right}] is outside "
-            f"frame width {frame_w}")
+    lanes.sort(key=lambda lane: lane.index)
+    if [lane.index for lane in lanes] != list(range(len(lanes))):
+        raise ConfigError("track indices must be unique and contiguous from 0")
+    if sum(lane.role == "normal" for lane in lanes) != normal_lane_count:
+        raise ConfigError("resolved normal track count does not match profile")
+
+    # --- 5. geometry and template sanity ------------------------------------
     if not (0 <= pf["top"] < pf["bottom"] <= frame_h):
         raise ConfigError(
             f"playfield y-range [{pf['top']},{pf['bottom']}] is outside "
             f"frame height {frame_h}")
+    for lane in lanes:
+        x1, x2 = lane.x_range
+        if not (0 <= x1 < x2 <= frame_w):
+            raise ConfigError(
+                f"track '{lane.name}' x-range {lane.x_range} is outside frame")
+        if lane.trigger_y_top != line_y - lane.note_height:
+            _warn(f"track '{lane.name}' trigger_y_top={lane.trigger_y_top} but "
+                  f"line_y-note_height={line_y - lane.note_height}")
+        if lane.role == "overlay":
+            if not (0.0 < lane.coverage_threshold <= 1.0):
+                raise ConfigError(
+                    f"track '{lane.name}' has invalid coverage threshold")
+            if not lane.mask_hue_ranges or any(
+                    not (0 <= lo <= hi <= 179)
+                    for lo, hi in lane.mask_hue_ranges):
+                raise ConfigError(f"track '{lane.name}' has invalid HSV hue ranges")
+        for key, template in lane.templates.items():
+            th, tw = template.shape[:2]
+            if th != lane.note_height:
+                _warn(f"track '{lane.name}' {key} template height {th}px != "
+                      f"note_height {lane.note_height}px")
+            if tw > lane.match_x_range[1] - lane.match_x_range[0]:
+                raise ConfigError(
+                    f"track '{lane.name}' {key} template is wider than match ROI")
 
-    # --- 8. capture / video --------------------------------------------------
+    # --- 6. capture / video --------------------------------------------------
     cap_cfg    = song["capture"]
     fps = float(cap_cfg["fps"])
     note_speed = float(cap_cfg["note_speed"])
@@ -369,10 +494,9 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
     else:
         _warn("capture.video_path is empty — set it before running the pipeline.")
 
-    # --- 9. assemble ---------------------------------------------------------
+    # --- 7. assemble ---------------------------------------------------------
     bi_geom = profile["beat_indicator"]["roi"]
     bi_skin = skin["beat_indicator"]
-    mt      = profile["matching"]
     beat_channel = bi_skin["channel"]
     if beat_channel not in CHANNEL_EXTRACTORS:
         raise ConfigError(
@@ -421,19 +545,13 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
         playfield_top=pf["top"],
         playfield_bottom=pf["bottom"],
         line_y=line_y,
-        note_height=note_height,
-        note_width=tw,
-        trigger_template_y_top=trigger,
-        tail_release_offset_px=tail_release_offset,
-        key_count=key_count,
+        normal_lane_count=normal_lane_count,
         lanes=lanes,
-        tail_search_y_max=mt["tail_search_y_max"],
         beat_roi=tuple(bi_geom),
         beat_channel=beat_channel,
         beat_diff_threshold=float(bi_skin["diff_threshold"]),
         measure_line=measure_line_cfg,
         pixels_per_frame=float(meas["pixels_per_frame"]),
-        min_longnote_px=int(meas["min_longnote_px"]),
     )
 
 

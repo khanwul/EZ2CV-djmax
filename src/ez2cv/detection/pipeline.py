@@ -68,12 +68,21 @@ def _print_progress(done: int, total: int, *, width: int = 40,
 # =============================================================================
 
 @dataclass
+class TrackMetadata:
+    """Stable meaning of one logical input in raw/chart output."""
+    index: int
+    name: str
+    role: str
+    color: str
+
+
+@dataclass
 class RawChart:
     """Serializable ms-domain checkpoint produced by video detection."""
     song_name: str
     skin_name: str
     key_mode: str
-    lane_colors: tuple[str, ...]
+    tracks: tuple[TrackMetadata, ...]
     display_resolution: tuple[int, int]
     video_path: str
     fps: float
@@ -89,7 +98,16 @@ class RawChart:
 
     @property
     def key_count(self) -> int:
-        return len(self.lane_colors)
+        return len(self.tracks)
+
+    @property
+    def lane_colors(self) -> tuple[str, ...]:
+        """Compatibility view for renderers that only need display colors."""
+        return tuple(track.color for track in self.tracks)
+
+    @property
+    def normal_lane_count(self) -> int:
+        return sum(track.role == "normal" for track in self.tracks)
 
     @property
     def duration_ms(self) -> float:
@@ -211,7 +229,8 @@ class DetectionPipeline:
             song_name=self.cal.song_name,
             skin_name=self.cal.skin_name,
             key_mode=self.cal.key_mode,
-            lane_colors=tuple(ln.color for ln in self.cal.lanes),
+            tracks=tuple(TrackMetadata(ln.index, ln.name, ln.role, ln.color)
+                         for ln in self.cal.lanes),
             display_resolution=self.cal.display_resolution,
             video_path=str(self.cal.video_path),
             fps=self.cal.fps,

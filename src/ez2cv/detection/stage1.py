@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import cv2
 import numpy as np
 
 from ez2cv.config import RunConfig
@@ -64,7 +65,7 @@ class Stage1Result:
     color: str
     roi_y_origin: int             # ROI y + this = full-frame y
     threshold: float              # the Stage 1 brightness gate used
-    projection: np.ndarray        # (H,) float — row-mean of the detection ROI
+    projection: np.ndarray        # normal: row mean 0..255; overlay: coverage 0..1
     runs: list[Run] = field(default_factory=list)
 
 
@@ -95,38 +96,36 @@ class ProjectionDetector:
         """
         self.cal = cal
         self.min_run_px = 5 if min_run_px is None else min_run_px
-        self.short_run_max = (cal.note_height + 8
-                              if short_run_max is None else short_run_max)
-        # per-lane Stage 1 threshold, indexed by lane index
-        self._thresholds = {ln.index: ln.stage1_threshold for ln in cal.lanes}
-        # scan ceiling: in ROI space, ignore rows at or below the trigger top.
-        # The judgment-line glow band sits BELOW the trigger and is mid-bright;
-        # without this cap, Stage 1 emits runs for the glow that Stage 2 then
-        # promotes to spurious lnhead/note matches near the line.
-        self._scan_y_max = max(0, cal.trigger_template_y_top - cal.playfield_top)
+        self.short_run_max = short_run_max
 
     # ------------------------------------------------------------------ #
     def detect_lane(self, lane: LaneFrame, *, frame_index: int,
                     roi_y_origin: int) -> Stage1Result:
         """Run Stage 1 on a single lane."""
-        # --- 1D vertical projection: mean across the 82px lane width --------
-        # mean (not sum) keeps the signal on a 0-255 scale, matching the
-        # RunConfig threshold which is defined as a per-row mean value.
-        proj = lane.detection_roi.mean(axis=1)
-        thr = self._thresholds[lane.index]
+        lane_config = self.cal.lanes[lane.index]
+        if lane_config.role == "overlay":
+            proj = self._overlay_projection(lane, lane_config)
+            thr = lane_config.coverage_threshold
+        else:
+            # Mean keeps the normal-lane signal on the configured 0-255 scale.
+            proj = lane.detection_roi.mean(axis=1)
+            thr = lane_config.stage1_threshold
 
         # --- binary lit mask + maximal runs --------------------------------
-        # Suppress rows at/below the judgment-line glow band (see __init__).
+        # Suppress rows at/below this track's judgment trigger.
         # The full projection is still returned — measureline.py reads it.
         lit = proj > thr
-        if self._scan_y_max < lit.shape[0]:
-            lit[self._scan_y_max:] = False
+        scan_y_max = max(0, lane_config.trigger_y_top - self.cal.playfield_top)
+        if scan_y_max < lit.shape[0]:
+            lit[scan_y_max:] = False
         runs: list[Run] = []
+        short_run_max = (lane_config.note_height + 8
+                         if self.short_run_max is None else self.short_run_max)
         for s, e in _find_runs(lit):
             if e - s < self.min_run_px:
                 continue                       # noise — discard
             seg = proj[s:e]
-            kind = "short" if (e - s) <= self.short_run_max else "long"
+            kind = "short" if (e - s) <= short_run_max else "long"
             runs.append(Run(
                 y_start=int(s),
                 y_end=int(e),
@@ -144,6 +143,21 @@ class ProjectionDetector:
             projection=proj,
             runs=runs,
         )
+
+    def _overlay_projection(self, lane: LaneFrame, lane_config) -> np.ndarray:
+        """Return per-row HSV-mask coverage for one fixed overlay ROI."""
+        offset = lane_config.x_range[0] - lane_config.match_x_range[0]
+        width = lane_config.x_range[1] - lane_config.x_range[0]
+        hsv = cv2.cvtColor(lane.matching_roi[:, offset:offset + width],
+                           cv2.COLOR_BGR2HSV)
+        hue, saturation, value = cv2.split(hsv)
+        hue_match = np.zeros(hue.shape, dtype=bool)
+        for low, high in lane_config.mask_hue_ranges:
+            hue_match |= (hue >= low) & (hue <= high)
+        mask = (hue_match
+                & (saturation >= lane_config.mask_saturation_min)
+                & (value >= lane_config.mask_value_min))
+        return mask.mean(axis=1)
 
     # ------------------------------------------------------------------ #
     def detect_frame(self, pf: PreprocessedFrame) -> list[Stage1Result]:

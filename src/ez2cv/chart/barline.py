@@ -323,11 +323,11 @@ def reconstruct_barlines(barlines: list[BarlineEvent],
         # different notion from detection's crossing-extrapolation flag — so an
         # observed barline is emitted with extrapolated=False regardless of how
         # its detection crossing was obtained.
+        ms = _ms_for_ordinal(o, beat_ms)
         if observed_src is not None:
             b = barlines[observed_src]
-            return BarlineEvent(cross_frame=b.cross_frame, ms=b.ms,
+            return BarlineEvent(cross_frame=b.cross_frame, ms=ms,
                                 strength=b.strength, extrapolated=False)
-        ms = _ms_for_ordinal(o, beat_ms)
         return BarlineEvent(cross_frame=f0 + fpms * ms, ms=ms,
                             strength=0.0, extrapolated=True)
 
@@ -337,6 +337,14 @@ def reconstruct_barlines(barlines: list[BarlineEvent],
     measure_meters: list[int] = []
 
     first_o = true_ords[0]
+    # The detector may be blind during the intro. The first observed line still
+    # fixes measure phase, so extend that phase back to the earliest POW beat.
+    # ponytail: pre-detection measures use the global meter; revisit only with
+    # a recording that proves an intro time-signature change.
+    for o in range(first_o % M, first_o, M):
+        out_barlines.append(make_barline(o, None))
+        beat_indices.append(o)
+        measure_meters.append(M)
     out_barlines.append(make_barline(first_o, src_idx[true_local[0]]))
     beat_indices.append(first_o)
 

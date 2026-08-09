@@ -153,7 +153,7 @@ class NoteTracker:
                  max_stale_frames: int = 4,
                  max_stale_grace: int = 15,
                  up_jitter_px: float = 6.0,
-                 down_jitter_px: float = 16.0):
+                 down_jitter_px: float = 20.0):
         """
         max_stale_frames : drop a normal edge unseen this many frames.
         max_stale_grace  : an un-emitted *lnhead* edge near the trigger is kept
@@ -161,7 +161,6 @@ class NoteTracker:
         up/down_jitter_px : slack on the directional association gate.
         """
         self.cal = cal
-        self.trigger = cal.trigger_template_y_top
         self.fps = cal.fps
         self.max_stale = max_stale_frames
         self.max_grace = max_stale_grace
@@ -175,10 +174,10 @@ class NoteTracker:
     # ------------------------------------------------------------------ #
     def step(self, frame_index: int, s2_results):
         """Advance the tracker one frame; return any new trigger crossings."""
-        speed = self.speed.speed                  # speed from the PREVIOUS frame
         events = []
 
         for res in s2_results:
+            speed = self._lane_speed(res.lane_index)
             edges = self._lanes[res.lane_index]
             free = list(res.matches)
 
@@ -195,6 +194,20 @@ class NoteTracker:
                 if e.last_seen == frame_index:
                     continue
                 for m in free:
+                    # Tails are a distinct physical edge and must never steal
+                    # a descending head. Normal tap/head templates may still
+                    # trade labels frame-to-frame. Longnote-only side masks
+                    # are authoritative; L/R masks overlap normal red notes
+                    # and retain the normal type-flexible association.
+                    lane = self.cal.lanes[e.lane]
+                    role = getattr(lane, "role", "normal")
+                    side_only = (role == "overlay"
+                                 and "tap" not in lane.allowed_types)
+                    if (e.type != m.type and (
+                            side_only
+                            or (role == "normal"
+                                and "lntail" in (e.type, m.type)))):
+                        continue
                     d = self._gate_dist(e, m, frame_index, speed)
                     if d is not None:
                         pairs.append((d, e, m))
@@ -244,7 +257,9 @@ class NoteTracker:
         # "displacement" every frame would drag the median speed down, narrow
         # the gate, and fragment fast notes.
         moving = [e for lst in self._lanes.values() for e in lst
-                  if e.trajectory[-1][1] < self.trigger]
+                  if self.cal.lanes[e.lane].include_in_consensus
+                  and e.trajectory[-1][1]
+                  < self.cal.lanes[e.lane].trigger_y_top]
         self.speed.update(moving)
         return events
 
@@ -263,6 +278,12 @@ class NoteTracker:
     # ------------------------------------------------------------------ #
     # internals
     # ------------------------------------------------------------------ #
+    def _lane_speed(self, lane_index: int) -> float:
+        """Never track below the calibrated scroll speed."""
+        lane = self.cal.lanes[lane_index]
+        return (max(self.speed.speed, self.cal.pixels_per_frame)
+                if lane.include_in_consensus else self.cal.pixels_per_frame)
+
     def _gate_dist(self, e, m, frame_index, speed):
         """Distance to prediction if m is inside e's directional gate, else None.
 
@@ -272,14 +293,28 @@ class NoteTracker:
         the line, so its continuation can only be near the trigger — the gate
         is clamped there, which stops it grabbing a far-away later note.
         """
+        lane = self.cal.lanes[e.lane]
+        trigger = lane.trigger_y_top
         elapsed = frame_index - e.last_seen
+        role = getattr(lane, "role", "normal")
+        down_jitter = self.down_jitter if role == "normal" else 16.0
         lo = e.last_y - self.up_jitter
         if elapsed <= self.max_stale:
-            hi = e.last_y + elapsed * speed + speed + self.down_jitter
+            hi = e.last_y + elapsed * speed + speed + down_jitter
             pred = e.last_y + elapsed * speed
-        else:                                  # grace-kept lnhead, held at line
-            hi = self.trigger + self.cal.note_height + self.down_jitter
-            pred = float(self.trigger)
+        elif ((role == "overlay" and "tap" in lane.allowed_types
+               and elapsed == self.max_stale + 1)
+              or (e.type == "lnhead" and not e.trigger_emitted
+                  and e.last_y >= trigger - 3 * speed
+                  and e.last_y <= trigger + lane.note_height
+                  and elapsed <= self.max_grace)):
+            # L/R's wide, sparse mask needs its existing one-frame retry.
+            # Normal taps do not: they can steal the next note in a dense
+            # same-lane stream. An un-emitted longnote head keeps full grace.
+            hi = trigger + lane.note_height + down_jitter
+            pred = float(trigger)
+        else:
+            return None
         if lo <= m.y_top <= hi:
             return abs(m.y_top - pred)
         return None
@@ -291,14 +326,16 @@ class NoteTracker:
         # extended grace ONLY for a longnote head: it stops matching for ~10
         # frames as it is caught at the line, then reappears HELD. A tap or
         # tail just vanishes — letting it linger would steal a later note.
+        lane = self.cal.lanes[e.lane]
+        trigger = lane.trigger_y_top
         if (e.type == "lnhead" and not e.trigger_emitted
-                and e.last_y >= self.trigger - 3 * speed
-                and e.last_y <= self.trigger + self.cal.note_height
+                and e.last_y >= trigger - 3 * speed
+                and e.last_y <= trigger + lane.note_height
                 and frame_index - e.last_seen <= self.max_grace):
             return True
         return False
 
-    def _tail_lag_frames(self) -> float:
+    def _tail_lag_frames(self, e) -> float:
         """Frames to ADD to a longnote tail's crossing time.
 
         A note/lnhead is hit the instant its tracked top reaches the line, and
@@ -314,17 +351,25 @@ class NoteTracker:
         the edge tracking, pairing and extrapolation gates are untouched (the
         bias-fix must not change which notes are detected, only an end time).
         """
-        sp = self.speed.speed
-        descent = self.cal.note_height + self.cal.tail_release_offset_px
+        sp = self._lane_speed(e.lane)
+        lane = self.cal.lanes[e.lane]
+        descent = lane.note_height + lane.tail_release_offset_px
         return (descent / sp) if sp > 0 else 0.0
+
+    def _timing_offset_frames(self, e) -> float:
+        """Convert a track's measured visual-edge bias to frame time."""
+        sp = self._lane_speed(e.lane)
+        offset = getattr(self.cal.lanes[e.lane], "timing_offset_px", 0)
+        return (offset / sp) if sp > 0 else 0.0
 
     def _check_trigger(self, e):
         """Emit if the trajectory straddles the trigger line (interpolation)."""
+        trigger = self.cal.lanes[e.lane].trigger_y_top
         traj = e.trajectory
         for i in range(len(traj) - 1):
             fa, ya, sa = traj[i]
             fb, yb, sb = traj[i + 1]
-            if ya < self.trigger <= yb and yb != ya:
+            if ya < trigger <= yb and yb != ya:
                 # A normal straddle spans consecutive frames, so linear
                 # interpolation lands the crossing accurately. But a grace-kept
                 # lnhead straddles across the HOLD gap: it reached the line
@@ -334,14 +379,15 @@ class NoteTracker:
                 # smears the crossing over the whole hold and post-dates it by
                 # several frames. The head actually crossed right after `fa`, so
                 # project from there at the global descent speed instead.
-                sp = self.speed.speed
+                sp = self._lane_speed(e.lane)
                 if fb - fa > self.max_stale and e.type == "lnhead" and sp > 0:
-                    cf = fa + (self.trigger - ya) / sp
+                    cf = fa + (trigger - ya) / sp
                 else:
-                    frac = (self.trigger - ya) / (yb - ya)
+                    frac = (trigger - ya) / (yb - ya)
                     cf = fa + frac * (fb - fa)
                 if e.type == "lntail":
-                    cf += self._tail_lag_frames()
+                    cf += self._tail_lag_frames(e)
+                cf += self._timing_offset_frames(e)
                 match = (sa + sb) / 2
                 conf = _trigger_confidence(len(traj), 0.0, match)
                 return TriggerEvent(e.lane, e.type, cf,
@@ -357,16 +403,20 @@ class NoteTracker:
         """
         if len(e.trajectory) < 2:
             return None
+        trigger = self.cal.lanes[e.lane].trigger_y_top
         fb, yb, sb = e.trajectory[-1]
-        if yb >= self.trigger:
+        if yb >= trigger:
             return None
-        sp = self.speed.speed
-        if sp <= 0 or (self.trigger - yb) > 3 * sp:    # died too far short
+        sp = self._lane_speed(e.lane)
+        lane = self.cal.lanes[e.lane]
+        reach = 3 * sp + (self.down_jitter if lane.role == "normal" else 0)
+        if sp <= 0 or (trigger - yb) > reach:     # died too far short
             return None
-        cf = fb + (self.trigger - yb) / sp
+        cf = fb + (trigger - yb) / sp
         if e.type == "lntail":
-            cf += self._tail_lag_frames()
-        proj_ratio = (self.trigger - yb) / (3.0 * sp)  # 0 = clean .. 1 = max guess
+            cf += self._tail_lag_frames(e)
+        cf += self._timing_offset_frames(e)
+        proj_ratio = (trigger - yb) / (3.0 * sp)  # 0 = clean .. 1 = max guess
         conf = _trigger_confidence(len(e.trajectory), proj_ratio, sb)
         return TriggerEvent(e.lane, e.type, cf,
                             cf / self.fps * 1000.0, sb,
@@ -390,9 +440,13 @@ class LongnoteStateMachine:
     def __init__(self, cal: RunConfig):
         self.cal = cal
         self._colors = {ln.index: ln.color for ln in cal.lanes}
+        self._allowed = {ln.index: ln.allowed_types for ln in cal.lanes}
         # a "longnote" whose head->tail gap is under min_longnote_px is a tap
-        self._min_ln_ms = (cal.min_longnote_px
-                           / cal.pixels_per_frame / cal.fps * 1000.0)
+        self._min_ln_ms = {
+            ln.index: ln.min_longnote_px
+            / cal.pixels_per_frame / cal.fps * 1000.0
+            for ln in cal.lanes
+        }
         self._open = {}                              # lane -> pending lnhead
         self.orphan_tails = 0                        # diagnostics
 
@@ -401,7 +455,9 @@ class LongnoteStateMachine:
         color = self._colors[head.lane]
         extrap = head.extrapolated or end_ev.extrapolated
         conf = min(head.confidence, end_ev.confidence)   # weakest end governs
-        if end_ev.ms - head.ms < self._min_ln_ms:        # too short -> it's a tap
+        if end_ev.ms - head.ms < self._min_ln_ms[head.lane]:
+            if "tap" not in self._allowed[head.lane]:
+                return None
             return RawNote(head.lane, "tap", head.ms, None, color,
                            conf, extrapolated=extrap)
         return RawNote(head.lane, "longnote", head.ms, end_ev.ms, color,
@@ -412,13 +468,16 @@ class LongnoteStateMachine:
         color = self._colors[ev.lane]
 
         if ev.type == "note":
+            if "tap" not in self._allowed[ev.lane]:
+                return None
             return RawNote(ev.lane, "tap", ev.ms, None, color, ev.confidence,
                            extrapolated=ev.extrapolated)
 
         if ev.type == "lnhead":
             pending = self._open.get(ev.lane)
+            min_ln_ms = self._min_ln_ms[ev.lane]
             if pending is not None and (
-                    self._min_ln_ms <= ev.ms - pending.ms < self._MISTYPED_TAIL_MS):
+                    min_ln_ms <= ev.ms - pending.ms < self._MISTYPED_TAIL_MS):
                 # A lane physically cannot hold two longnotes at once, so a
                 # second lnhead arriving a short-LN's body-length after an open
                 # one (no tail between) is the OPEN note's tail MIS-TYPED as a
@@ -435,6 +494,17 @@ class LongnoteStateMachine:
                 self._open.pop(ev.lane)
                 return self._close(pending, ev)
             self._open[ev.lane] = ev                 # longnote opens
+            if (pending is not None
+                    and ev.ms - pending.ms >= self._MISTYPED_TAIL_MS
+                    and getattr(self.cal.lanes[ev.lane], "role", "normal")
+                    == "normal"
+                    and "tap" in self._allowed[ev.lane]):
+                # A later head proves the previous hold is over. If its tail
+                # was missed, preserve the detected head as a tap instead of
+                # silently discarding a real note while opening the new one.
+                return RawNote(pending.lane, "tap", pending.ms, None, color,
+                               pending.confidence,
+                               extrapolated=pending.extrapolated)
             return None
 
         if ev.type == "lntail":
@@ -449,9 +519,10 @@ class LongnoteStateMachine:
         """Longnotes whose tail was never seen — emit head-only as a tap."""
         out = []
         for lane, head in self._open.items():
-            out.append(RawNote(lane, "tap", head.ms, None,
-                               self._colors[lane], head.confidence,
-                               extrapolated=head.extrapolated))
+            if "tap" in self._allowed[lane]:
+                out.append(RawNote(lane, "tap", head.ms, None,
+                                   self._colors[lane], head.confidence,
+                                   extrapolated=head.extrapolated))
         self._open.clear()
         return out
 
@@ -460,7 +531,7 @@ class LongnoteStateMachine:
 # Duplicate-trigger merge
 # =============================================================================
 
-def merge_duplicate_triggers(events, merge_window_ms: float = 6.0):
+def merge_duplicate_triggers(events, merge_window_ms: float = 10.0):
     """Drop spurious double-detections from a TriggerEvent stream.
 
     A single physical note occasionally spawns two tracked edges that each

@@ -9,13 +9,13 @@ from pathlib import Path
 from ez2cv.chart import Chart, ChartNote
 from ez2cv.chart.clock import BPMSegment
 from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.detection import RawChart
+from ez2cv.detection import RawChart, TrackMetadata
 from ez2cv.detection.barline import BarlineEvent
 from ez2cv.detection.beat import BeatEvent
 from ez2cv.detection.tracking import RawNote
 
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "3.0"
 
 
 def _reject_constant(value: str) -> None:
@@ -52,7 +52,13 @@ def serialize_raw(raw: RawChart) -> dict:
             "song": raw.song_name,
             "skin": raw.skin_name,
             "key_mode": raw.key_mode,
-            "lane_colors": list(raw.lane_colors),
+            "normal_lane_count": raw.normal_lane_count,
+            "tracks": [{
+                "index": track.index,
+                "name": track.name,
+                "role": track.role,
+                "color": track.color,
+            } for track in raw.tracks],
             "display_resolution": list(raw.display_resolution),
             "video": raw.video_path,
             "fps": float(raw.fps),
@@ -97,7 +103,7 @@ def serialize_raw(raw: RawChart) -> dict:
 
 
 def read_raw(path: str | Path) -> RawChart:
-    """Load a schema-2 raw checkpoint without video or template assets."""
+    """Load a schema-3 raw checkpoint without video or template assets."""
     source = Path(path)
     try:
         payload = json.loads(
@@ -113,7 +119,12 @@ def read_raw(path: str | Path) -> RawChart:
             song_name=str(meta["song"]),
             skin_name=str(meta["skin"]),
             key_mode=str(meta["key_mode"]),
-            lane_colors=tuple(str(color) for color in meta["lane_colors"]),
+            tracks=tuple(TrackMetadata(
+                index=int(track["index"]),
+                name=str(track["name"]),
+                role=str(track["role"]),
+                color=str(track["color"]),
+            ) for track in meta["tracks"]),
             display_resolution=tuple(int(v) for v in meta["display_resolution"]),
             video_path=str(meta["video"]),
             fps=float(meta["fps"]),
@@ -155,8 +166,14 @@ def read_raw(path: str | Path) -> RawChart:
     numeric.extend(barline.ms for barline in raw.barlines)
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError(f"invalid raw chart {source}: non-finite number")
-    if raw.fps <= 0 or raw.tick_resolution <= 0 or not raw.lane_colors:
+    if raw.fps <= 0 or raw.tick_resolution <= 0 or not raw.tracks:
         raise ValueError(f"invalid raw chart {source}: invalid timing or lanes")
+    if [track.index for track in raw.tracks] != list(range(raw.key_count)):
+        raise ValueError(f"invalid raw chart {source}: invalid track indexes")
+    if any(track.role not in {"normal", "overlay"} for track in raw.tracks):
+        raise ValueError(f"invalid raw chart {source}: invalid track role")
+    if int(meta["normal_lane_count"]) != raw.normal_lane_count:
+        raise ValueError(f"invalid raw chart {source}: normal lane count mismatch")
     if raw.min_bpm <= 0 or raw.max_bpm < raw.min_bpm:
         raise ValueError(f"invalid raw chart {source}: invalid BPM range")
     if len(raw.display_resolution) != 2:
@@ -214,7 +231,14 @@ def serialize_chart(chart: Chart) -> dict:
         "meta": {
             "song": chart.song_name,
             "key_mode": chart.key_mode,
-            "lane_colors": list(chart.lane_colors),
+            "normal_lane_count": sum(track.role == "normal"
+                                     for track in chart.tracks),
+            "tracks": [{
+                "index": track.index,
+                "name": track.name,
+                "role": track.role,
+                "color": track.color,
+            } for track in chart.tracks],
             "tick_resolution": int(chart.tick_resolution),
             "measure_zero_ms": _ms(chart.measure_zero_ms),
             "duration_ms": _ms(chart.stats["structure"]["duration_ms"]),

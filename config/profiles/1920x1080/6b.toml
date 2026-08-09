@@ -1,0 +1,64 @@
+# DJMAX RESPECT V — 1920x1080 / 6B / speed 6.0
+
+[meta]
+display_resolution = [1920, 1080]
+key_mode = "6b"
+normal_lane_count = 6
+
+[playfield]
+top = 0
+bottom = 800
+
+[judgment]
+line_y = 755
+
+[normal_lanes]
+field_left = 720
+lane_width = 80
+index_start = 1
+note_height = 30
+trigger_y_top = 725
+timing_offset_px = 13
+tail_release_offset_px = 0 # not calibrated yet
+tail_search_y_max = 713
+min_longnote_px = 35
+
+[matching]
+roi_x_margin = 0
+
+[beat_indicator]
+roi = [687, 831, 696, 840]
+
+[measurements]
+note_speed = 6.0
+pixels_per_frame = 24.0
+note_width_px = 72
+note_height_px = 30
+
+[[overlay_tracks]]
+index = 0
+name = "SIDE_L"
+x_range = [720, 960]
+color = "cyan"
+template_set = "side_cyan"
+allowed_types = ["longnote"]
+note_height = 4
+trigger_y_top = 751
+tail_release_offset_px = 0
+tail_search_y_max = 739
+min_longnote_px = 35
+include_in_consensus = false
+
+[[overlay_tracks]]
+index = 7
+name = "SIDE_R"
+x_range = [960, 1200]
+color = "cyan"
+template_set = "side_cyan"
+allowed_types = ["longnote"]
+note_height = 4
+trigger_y_top = 751
+tail_release_offset_px = 0
+tail_search_y_max = 739
+min_longnote_px = 35
+include_in_consensus = false

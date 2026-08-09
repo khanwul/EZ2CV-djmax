@@ -122,7 +122,7 @@ examples
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="ez2cv",
-        description="Extract an EZ2ON chart from gameplay video",
+        description="Extract a DJMAX chart from gameplay video",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

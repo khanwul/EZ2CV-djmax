@@ -1,0 +1,67 @@
+# DJMAX RESPECT V stable note skin, 1920x1080 reference capture.
+
+[skin]
+name = "ONGEKI"
+reference_resolution = [1920, 1080]
+
+# Only the narrow foreground lanes are listed here. Side/L/R tracks are
+# explicit overlay_tracks in each geometry profile.
+[lane_colors]
+"4b" = ["red", "green", "green", "cyan"]
+"5b" = ["red", "green", "red", "green", "cyan"]
+"6b" = ["red", "green", "cyan", "red", "green", "cyan"]
+"8b" = ["red", "green", "cyan", "red", "green", "cyan"]
+
+[templates.normal_red]
+note = "note_normal_red.png"
+lnhead = "note_normal_red_lnhead.png"
+lntail = "note_normal_red_lntail.png"
+
+[templates.normal_green]
+note = "note_normal_green.png"
+lnhead = "note_normal_green_lnhead.png"
+lntail = "note_normal_green_lntail.png"
+
+[templates.normal_cyan]
+note = "note_normal_cyan.png"
+lnhead = "note_normal_cyan_lnhead.png"
+lntail = "note_normal_cyan_lntail.png"
+
+[detection.channel]
+normal_red = "red"
+normal_green = "green"
+normal_cyan = "max_bg"
+side_cyan = "max_bg"
+lr_red = "red"
+
+[thresholds]
+matching = 0.85
+stage1_brightness = 60.0
+
+# Cyan side bodies remain above 0.99 coverage in the sampled active rows;
+# foreground normal notes stayed below this 0.50 split.
+[overlay_masks.side_cyan]
+hue_ranges = [[75, 105]]
+saturation_min = 120
+value_min = 60
+coverage_threshold = 0.50
+
+# L/R samples straddle the red HSV wrap, so both hue ranges are required.
+[overlay_masks.lr_red]
+hue_ranges = [[0, 5], [150, 179]]
+saturation_min = 150
+value_min = 60
+coverage_threshold = 0.50
+
+[beat_indicator]
+channel = "green"
+diff_threshold = 20.0
+
+# Initial DJMAX values. These remain calibration data and must be swept during
+# the full-video bar-line stage instead of inheriting EZ2ON's thresholds.
+[measure_line]
+lit_energy_threshold = 30.0
+min_brightness = 20.0
+max_brightness = 160.0
+max_thickness = 4
+lane_slack = 1

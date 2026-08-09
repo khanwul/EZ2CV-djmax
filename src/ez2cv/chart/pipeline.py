@@ -5,8 +5,7 @@
     3. ``TimeSignature``     from barlines + TickClock          (time_sig)
     4. ms → tick conversion for every note (head + tail)
     5. snap-to-grid (quantizer); longnote tails snap as RELATIVE lengths
-    6. pickup-note policy: keep one measure pre-anacrusis, drop earlier
-    7. ``Chart`` ready for serialization
+    6. ``Chart`` ready for serialization
 
 What chart conversion deliberately does not do
 -----------------------------------------------
@@ -24,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ez2cv.detection import RawChart
+from ez2cv.detection import RawChart, TrackMetadata
 from ez2cv.chart.clock import BPMSegment, TickClock
 from ez2cv.chart.bpm_barline import build_tick_clock
 from ez2cv.chart.meter import TimeSignature, TimeSigVariant, barline_ticks
@@ -53,7 +52,7 @@ class ChartNote:
 class Chart:
     song_name: str
     key_mode: str
-    lane_colors: tuple[str, ...]
+    tracks: tuple[TrackMetadata, ...]
     tick_resolution: int
     bpm_segments: list[BPMSegment]
     global_time_sig: TimeSignature
@@ -62,6 +61,10 @@ class Chart:
     notes: list[ChartNote]
     barlines_tick: list[int]
     stats: dict
+
+    @property
+    def lane_colors(self) -> tuple[str, ...]:
+        return tuple(track.color for track in self.tracks)
 
     def summary(self) -> str:
         bpm_lo = min(s.bpm_start for s in self.bpm_segments)
@@ -76,8 +79,7 @@ class Chart:
             f"  measures         : {self.stats['structure']['measure_count']}",
             f"  off-grid ratio   : "
             f"{self.stats['rhythm']['off_grid_ratio']*100:.1f}%",
-            f"  predicted combo  : "
-            f"{self.stats['counts']['predicted_max_combo']}",
+            f"  note count       : {self.stats['counts']['total_notes']}",
         ]
         return "\n".join(lines)
 
@@ -103,7 +105,8 @@ def build_chart(raw: RawChart) -> Chart:
     global_ts, variants = rec.time_signature, rec.variants
 
     # --- 2. anchor & tick clock ---------------------------------------
-    measure_zero_ms = float(barlines[0].ms)
+    anchor = next((bar for bar in barlines if not bar.extrapolated), barlines[0])
+    measure_zero_ms = float(anchor.ms)
     active_window = (float(barlines[0].ms), float(barlines[-1].ms))
     R = raw.tick_resolution
     # Barline-derived BPM (per-measure resolution → resolves staircases),
@@ -124,10 +127,8 @@ def build_chart(raw: RawChart) -> Chart:
 
     # --- 3. barline ticks on the reconstructed (gap-free) grid --------
     bl_ticks = barline_ticks(barlines, clock, global_ts, variants)
-    ticks_per_global_measure = global_ts.ticks_per_measure(R)
-
     # --- 3. notes : raw ticks, then snap ------------------------------
-    notes, snaps = _convert_and_snap_notes(raw, clock, ticks_per_global_measure)
+    notes, snaps = _convert_and_snap_notes(raw, clock)
 
     # --- 4. stats -----------------------------------------------------
     stats = _build_stats(notes, snaps, clock, raw, bl_ticks, variants)
@@ -135,7 +136,7 @@ def build_chart(raw: RawChart) -> Chart:
     return Chart(
         song_name=raw.song_name,
         key_mode=raw.key_mode,
-        lane_colors=raw.lane_colors,
+        tracks=raw.tracks,
         tick_resolution=raw.tick_resolution,
         bpm_segments=clock.segments,
         global_time_sig=global_ts,
@@ -148,8 +149,7 @@ def build_chart(raw: RawChart) -> Chart:
 
 # ------------------------------------------------------------------ #
 
-def _convert_and_snap_notes(raw: RawChart, clock: TickClock,
-                            ticks_per_global_measure: int
+def _convert_and_snap_notes(raw: RawChart, clock: TickClock
                             ) -> tuple[list[ChartNote], list[SnapResult]]:
     """RawNote → ChartNote with head snap + relative tail snap."""
     R = clock.tick_resolution
@@ -161,13 +161,7 @@ def _convert_and_snap_notes(raw: RawChart, clock: TickClock,
     snaps = snap_with_local_context(raw_heads, tick_resolution=R)
 
     chart_notes: list[ChartNote] = []
-    anacrusis_floor = -ticks_per_global_measure       # 1-measure pickup zone
-
     for raw_note, raw_t, snap in zip(raw.notes, raw_heads, snaps):
-        # pickup-note drop: pre-first-barline by > one measure
-        if snap.tick < anacrusis_floor:
-            continue
-
         end_tick: int | None = None
         if raw_note.type == "longnote" and raw_note.end_ms is not None:
             raw_end = clock.ms_to_tick(raw_note.end_ms)
@@ -191,28 +185,12 @@ def _convert_and_snap_notes(raw: RawChart, clock: TickClock,
                    key=lambda i: (chart_notes[i].start_tick,
                                   chart_notes[i].lane))
     chart_notes = [chart_notes[i] for i in order]
-    snaps_filtered = [snaps[i] for i, rn in enumerate(raw.notes)
-                      if snaps[i].tick >= anacrusis_floor]
-    # NOTE: snaps_filtered keeps original order; re-sort to match chart_notes
-    # (used only for stats and diagnostics — order doesn't have to be perfect)
-    return chart_notes, snaps_filtered
+    return chart_notes, snaps
 
 
 # =============================================================================
 # Stats
 # =============================================================================
-
-def _predicted_max_combo(notes: list[ChartNote]) -> int:
-    """Per the algorithm memo: tap = 1, longnote = 1 + hold_ticks/48."""
-    total = 0
-    for n in notes:
-        if n.end_tick is None:
-            total += 1
-        else:
-            hold_ticks = max(0, n.end_tick - n.start_tick)
-            total += 1 + hold_ticks // 48
-    return total
-
 
 def _nps_peak(notes: list[ChartNote], clock: TickClock,
               window_ms: float = 4000.0) -> float:
@@ -274,7 +252,6 @@ def _build_stats(notes: list[ChartNote],
             "tap": taps,
             "longnote": lns,
             "total_notes": len(notes),
-            "predicted_max_combo": _predicted_max_combo(notes),
             "per_lane": per_lane,
         },
         "density": {

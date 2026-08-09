@@ -223,6 +223,9 @@ __marimo__/
 /config/skins/ez2on/5k/*
 !/config/song.toml
 /out/*
+# Local validation/game assets; keep them out of commits.
+/sample/*.mp4
+/config/skins/djmax/*/*.png
 measureline_calibrate.py
 /doc/game_mechanism.md
 /doc/EZ2CVtl;dr.pdf

@@ -71,7 +71,8 @@ class Stage2Result:
 CandidateGroup = list[tuple[str, int]]   # [(template_key, center_y_roi), ...]
 
 
-def _candidate_groups(run: Run, note_height: int) -> list[CandidateGroup]:
+def _candidate_groups(run: Run, note_height: int,
+                      allowed_types: frozenset[str]) -> list[CandidateGroup]:
     """Decide which template groups to try for a run.
 
     Returns a list of candidate GROUPS. Within a group the templates compete
@@ -81,16 +82,17 @@ def _candidate_groups(run: Run, note_height: int) -> list[CandidateGroup]:
     a regular note crossing the judgment line MERGES with the bright judgment
     bar, producing a run that can exceed short_run_max and get tagged "long".
     If "note" were only tried on short runs, those trigger-crossing notes would
-    be lost. So the run's LEADING (top) edge always gets a best-of-3
-    {note, lnhead, lntail} group — length only decides whether we ADD a second
-    group probing the trailing edge for a longnote head.
+    be lost. So the run's LEADING (top) edge always tries every template the
+    track allows; length only decides whether to add a trailing lnhead probe.
 
     """
-    top = run.y_start
-    groups: list[CandidateGroup] = [
-        [("note", top), ("lnhead", top), ("lntail", top)]   # leading edge
-    ]
-    if run.kind == "long":
+    leading = []
+    if "tap" in allowed_types:
+        leading.append(("note", run.y_start))
+    if "longnote" in allowed_types:
+        leading.extend((("lnhead", run.y_start), ("lntail", run.y_start)))
+    groups = [leading]
+    if run.kind == "long" and "longnote" in allowed_types:
         # a long run may also expose a longnote HEAD at its trailing edge
         groups.append([("lnhead", run.y_end - note_height)])
     return groups
@@ -122,13 +124,17 @@ class TemplateMatcher:
         s1: Stage1Result,
     ) -> Stage2Result:
         """Confirm types for every Stage 1 run in one lane."""
-        templates = self.cal.lanes[s1.lane_index].templates
+        lane_config = self.cal.lanes[s1.lane_index]
+        if lane_config.role == "overlay":
+            return self._match_overlay(s1, lane_config)
+        templates = lane_config.templates
         thr = self._th[s1.lane_index]
         roi = lane.matching_roi
         matches: list[Match] = []
 
         for run in s1.runs:
-            for group in _candidate_groups(run, self.cal.note_height):
+            for group in _candidate_groups(
+                    run, lane_config.note_height, lane_config.allowed_types):
                 # within a group the templates compete -> keep the best
                 best: Match | None = None
                 for key, center in group:
@@ -139,7 +145,7 @@ class TemplateMatcher:
                     score, y_top, x_off = hit
                     if score < thr:
                         continue
-                    if not self._tail_gate_ok(key, y_top):
+                    if not self._tail_gate_ok(key, y_top, lane_config):
                         continue
                     if best is None or score > best.score:
                         best = Match(s1.lane_index, key, y_top, x_off,
@@ -147,6 +153,42 @@ class TemplateMatcher:
                 if best is not None:
                     matches.append(best)
 
+        return Stage2Result(
+            frame_index=s1.frame_index,
+            lane_index=s1.lane_index,
+            color=s1.color,
+            matches=matches,
+        )
+
+    def _match_overlay(self, s1: Stage1Result, lane_config) -> Stage2Result:
+        """Turn reliable color-mask run edges directly into typed matches."""
+        matches = []
+        scan_y_max = lane_config.trigger_y_top - self.cal.playfield_top
+        for run in s1.runs:
+            score = run.mean_brightness
+            if run.kind == "short" and "tap" in lane_config.allowed_types:
+                # A partial LN entering at the top or leaving through the
+                # judgment zone is not a new tap.
+                if run.y_start > 0 and run.y_end < scan_y_max:
+                    matches.append(Match(
+                        s1.lane_index, "note", run.y_start + s1.roi_y_origin,
+                        0, score, run))
+                continue
+            if "longnote" not in lane_config.allowed_types:
+                continue
+            tail_y = run.y_start + s1.roi_y_origin
+            if self._tail_gate_ok("lntail", tail_y, lane_config):
+                matches.append(Match(
+                    s1.lane_index, "lntail", tail_y, 0, score, run))
+            # Once the lower edge reaches the scan ceiling, the real head is
+            # hidden by the judgment zone. Report the trigger position so the
+            # tracker emits the start now instead of extrapolating it at tail
+            # release. Before that point, use the visible endpoint geometry.
+            head_y = (scan_y_max if run.y_end >= scan_y_max
+                      else run.y_end - lane_config.note_height)
+            matches.append(Match(
+                s1.lane_index, "lnhead", head_y + s1.roi_y_origin,
+                0, score, run))
         return Stage2Result(
             frame_index=s1.frame_index,
             lane_index=s1.lane_index,
@@ -198,7 +240,8 @@ class TemplateMatcher:
         y_top = lo + loc[1] + roi_y_origin
         return float(score), int(y_top), int(loc[0])
 
-    def _tail_gate_ok(self, template_key: str, y_top: int) -> bool:
+    @staticmethod
+    def _tail_gate_ok(template_key: str, y_top: int, lane_config) -> bool:
         """Reject longnote-tail matches that fall in the judgment-bar zone.
 
         tail_search_y_max guards against the bright judgment bar being mistaken
@@ -206,4 +249,4 @@ class TemplateMatcher:
         """
         if template_key != "lntail":
             return True
-        return y_top <= self.cal.tail_search_y_max
+        return y_top <= lane_config.tail_search_y_max

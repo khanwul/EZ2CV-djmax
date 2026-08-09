@@ -87,9 +87,10 @@ def _extend_barlines(barlines: list[int], tpm: int, min_tick: int, max_tick: int
 def render(chart_path: Path, out_path: Path) -> None:
     chart = json.loads(chart_path.read_text())
     meta = chart["meta"]
-    lane_colors = meta.get("lane_colors")
-    if not lane_colors:
-        raise ValueError("chart meta has no lane_colors")
+    tracks = meta.get("tracks")
+    if not tracks:
+        raise ValueError("chart meta has no tracks")
+    lane_colors = [track["color"] for track in tracks]
     n_lanes = len(lane_colors)
     tick_res = meta["tick_resolution"]
     tpm = _ticks_per_measure(chart["time_signature"], tick_res)

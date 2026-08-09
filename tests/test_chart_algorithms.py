@@ -46,6 +46,31 @@ class ChartAlgorithmTest(unittest.TestCase):
         self.assertEqual(result.beat_indices, [0, 4, 8, 12])
         self.assertTrue(result.barlines[2].extrapolated)
 
+    def test_observed_barline_time_snaps_to_its_pow_beat(self):
+        beats = [BeatEvent(i, i * 500.0, 10.0) for i in range(9)]
+        bars = [
+            BarlineEvent(1.5, 25.0, 10.0),
+            BarlineEvent(121.5, 2_025.0, 10.0),
+            BarlineEvent(241.5, 4_025.0, 10.0),
+        ]
+
+        result = reconstruct_barlines(bars, beats)
+
+        self.assertEqual([bar.ms for bar in result.barlines],
+                         [0.0, 2_000.0, 4_000.0])
+
+    def test_missing_intro_barlines_are_reconstructed_from_phase(self):
+        beats = [BeatEvent(i, i * 500.0, 10.0) for i in range(13)]
+        bars = [
+            BarlineEvent(240.0, 4_000.0, 10.0),
+            BarlineEvent(360.0, 6_000.0, 10.0),
+        ]
+
+        result = reconstruct_barlines(bars, beats)
+
+        self.assertEqual(result.beat_indices, [0, 4, 8, 12])
+        self.assertEqual(len(result.measure_meters), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

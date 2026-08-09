@@ -120,7 +120,7 @@ class MeasureLineDetector:
         ``cal.measure_line`` (see that section for the rationale of each value).
         Pass a kwarg only to OVERRIDE the config — handy for a parameter sweep.
 
-        min_lanes defaults to ``key_count - measure_line.lane_slack``: a band
+        min_lanes defaults to ``normal_lane_count - measure_line.lane_slack``: a band
         must span (almost) every lane, with `lane_slack` lanes of give for a
         split frame or a note-occluded lane.
         """
@@ -135,7 +135,7 @@ class MeasureLineDetector:
                                else max_brightness)
         self.max_thickness = (ml.max_thickness if max_thickness is None
                               else max_thickness)
-        self.min_lanes = (max(2, cal.key_count - ml.lane_slack)
+        self.min_lanes = (max(2, cal.normal_lane_count - ml.lane_slack)
                           if min_lanes is None else min_lanes)
 
     # ------------------------------------------------------------------ #
@@ -150,6 +150,8 @@ class MeasureLineDetector:
         full energy regardless of straddle phase. Long-note bodies survive the
         sum too but are still rejected downstream by ``max_thickness``.
         """
+        s1_results = [result for result in s1_results
+                      if self.cal.lanes[result.lane_index].include_in_consensus]
         if not s1_results:
             return []
 
@@ -164,6 +166,11 @@ class MeasureLineDetector:
 
         origin = s1_results[0].roi_y_origin
         fidx = s1_results[0].frame_index
+        # The animated judgment bar can look like a thin full-width band on
+        # some frames. Stop where normal-note tracking stops; the line tracker
+        # can safely extrapolate the remaining note-height distance.
+        scan_y_max = max(0, self.cal.trigger_template_y_top - origin)
+        full_width[scan_y_max:] = False
 
         out: list[MeasureLineDetection] = []
         for s, e in _find_runs(full_width):
