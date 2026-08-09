@@ -5,6 +5,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 MODES = {"4k": 4, "5k": 5, "6k": 6, "8k": 8}
+LANE_STARTS = {
+    "4k": [755, 853, 969, 1067],
+    "5k": [755, 837, 919, 1001, 1083],
+    "6k": [755, 821, 887, 967, 1033, 1099],
+    "8k": [755, 805, 855, 905, 965, 1015, 1065, 1115],
+}
 
 
 class KeyModeConfigTest(unittest.TestCase):
@@ -27,8 +33,15 @@ class KeyModeConfigTest(unittest.TestCase):
 
                 left = profile["lanes"]["field_left"]
                 width = profile["lanes"]["lane_width"]
+                gap = profile["lanes"].get("center_gap", 0)
                 frame_width = profile["meta"]["display_resolution"][0]
-                self.assertEqual(left, (frame_width - key_count * width) // 2)
+                self.assertEqual(
+                    left, (frame_width - key_count * width - gap) // 2)
+                starts = [
+                    left + i * width + (gap if i >= key_count // 2 else 0)
+                    for i in range(key_count)
+                ]
+                self.assertEqual(starts, LANE_STARTS[mode])
 
 
 if __name__ == "__main__":

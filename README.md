@@ -15,8 +15,8 @@ EZ2CV runs an OpenCV-based computer vision pipeline to recognize note patterns f
 - Python 3.14
 - [uv](https://github.com/astral-sh/uv) for dependency management
 - The pipeline supports **4K, 5K, 6K, and 8K** profiles at 1920×1080.
-- Only **5K** has been verified against real recordings; recalibrate the bundled
-  bootstrap geometry for other modes when your panel layout differs.
+- The bundled **4K, 5K, 6K, and 8K** profiles are calibrated against real
+  recordings using the setup below.
 
 ## Setup
 

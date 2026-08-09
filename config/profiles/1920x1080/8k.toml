@@ -1,6 +1,5 @@
 # EZ2CV — 1920x1080 / 8K geometry
-# ponytail: centered 82px lanes bootstrap this mode; recalibrate these pixels
-# from an 8K recording if the selected panel skin lays the playfield out differently.
+# Calibrated from a speed-8.0, 60fps EZ2ON recording.
 
 [meta]
 display_resolution = [1920, 1080]
@@ -12,8 +11,9 @@ top = 0
 bottom = 835
 
 [lanes]
-field_left = 632
-lane_width = 82
+field_left = 755
+lane_width = 50
+center_gap = 10
 
 [judgment]
 line_y = 824
@@ -22,7 +22,7 @@ trigger_template_y_top = 802
 tail_release_offset_px = 13
 
 [beat_indicator]
-roi = [605, 844, 608, 851]
+roi = [728, 844, 731, 851]
 
 [matching]
 roi_x_margin = 5
@@ -31,6 +31,6 @@ tail_search_y_max = 790
 [measurements]
 note_speed = 8.0
 pixels_per_frame = 33.0
-note_width_px = 82
+note_width_px = 50
 note_height_px = 22
 min_longnote_px = 35

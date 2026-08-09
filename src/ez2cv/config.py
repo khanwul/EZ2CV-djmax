@@ -260,6 +260,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
     lanes_cfg   = profile["lanes"]
     field_left  = lanes_cfg["field_left"]
     lane_width  = lanes_cfg["lane_width"]
+    center_gap  = lanes_cfg.get("center_gap", 0)
     margin      = profile["matching"]["roi_x_margin"]
 
     thr               = skin["thresholds"]
@@ -297,7 +298,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
 
     lanes: list[LaneConfig] = []
     for i, color in enumerate(lane_colors):
-        x1 = field_left + i * lane_width
+        x1 = field_left + i * lane_width + (center_gap if i >= key_count // 2 else 0)
         x2 = x1 + lane_width
         mx1 = max(0, x1 - margin)
         mx2 = min(frame_w, x2 + margin)
@@ -339,7 +340,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
               f"matchTemplate needs roi_x_margin>0 for slide room.")
 
     # --- 7. geometry sanity --------------------------------------------------
-    field_right = field_left + key_count * lane_width
+    field_right = field_left + key_count * lane_width + center_gap
     if field_left < 0 or field_right > frame_w:
         raise ConfigError(
             f"playfield x-range [{field_left},{field_right}] is outside "
