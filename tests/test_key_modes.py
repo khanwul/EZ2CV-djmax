@@ -91,13 +91,14 @@ class KeyModeConfigTest(unittest.TestCase):
                     if not cv2.imwrite(str(mode_dir / filename), image):
                         raise RuntimeError(f"could not create {filename}")
 
-    def _load(self, mode):
+    def _load(self, mode, difficulty="SC"):
         song_path = self.config_root / f"song_{mode}.toml"
         song_path.write_text(
             textwrap.dedent(f"""
             [setup]
             skin = "ONGEKI"
             key_mode = "{mode}"
+            difficulty = "{difficulty}"
             display_resolution = "1920x1080"
 
             [capture]
@@ -114,6 +115,12 @@ class KeyModeConfigTest(unittest.TestCase):
         )
         with contextlib.redirect_stdout(io.StringIO()):
             return load_config(song_path)
+
+    def test_djmax_difficulties(self):
+        for difficulty in ("NM", "HD", "MX", "SC"):
+            with self.subTest(difficulty=difficulty):
+                self.assertEqual(self._load("5b", difficulty.lower()).difficulty,
+                                 difficulty)
 
     def test_every_mode_resolves_measured_normal_geometry(self):
         for mode, expected in MODES.items():

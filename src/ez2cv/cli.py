@@ -54,7 +54,7 @@ def run(config_path: str | Path, *,
     started = time.monotonic()
     config = load_config(config_path)
     song = config.song_name
-    out_root = output_dir(song)
+    out_root = output_dir(song, config.difficulty)
 
     _banner(f"Detection — video → milliseconds ({song})")
     config.summary()

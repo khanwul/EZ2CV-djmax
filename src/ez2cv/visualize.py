@@ -1,4 +1,4 @@
-"""Render `out/<song>/<song>_chart.json` as a piano-roll style image.
+"""Render `out/<song>/<difficulty>/<song>_chart.json` as a piano-roll image.
 
 Layout
 - One lane per configured key, drawn bottom-up (early ticks at the bottom).
@@ -9,8 +9,7 @@ Layout
   the global time signature.
 
 CLI:
-    python -m ez2cv.visualize [out/<song>/<song>_chart.json]
-    # default: out/song/song_chart.json
+    python -m ez2cv.visualize [out/<song>/<difficulty>/<song>_chart.json]
 """
 
 from __future__ import annotations

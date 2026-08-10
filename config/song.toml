@@ -12,6 +12,7 @@
 [setup]
 skin = "ONGEKI"                  # -> config/skins/ONGEKI/
 key_mode = "5b"                  # 4b | 5b | 6b | 8b
+difficulty = "SC"                # NM | HD | MX | SC
 display_resolution = "1920x1080" # -> profiles/1920x1080/<key_mode>.toml
 
 [capture]

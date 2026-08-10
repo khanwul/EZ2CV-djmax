@@ -65,7 +65,7 @@ and can be retried with `ez2cv *_raw.json --from-raw`.
 
 | Input | Responsibility |
 | --- | --- |
-| `config/<song>.toml` | video, FPS, note speed, tick resolution, BPM range |
+| `config/<song>.toml` | video, difficulty, FPS, note speed, tick resolution, BPM range |
 | `config/skins/<skin>/skin.toml` | colors, templates, channels, thresholds |
 | `config/profiles/<resolution>/<mode>.toml` | pixel geometry and measured speed |
 
@@ -154,7 +154,7 @@ round trip.
 The output `Chart` owns only chart metadata, BPM segments, time signatures,
 notes, barline ticks, and statistics. Neither `RawChart` nor `Chart` depends on
 detection configuration objects. `write_chart()` serializes it as
-`ez2cv.chart` 3.0: timing lives under one `timing` object, fixed and ramped BPM
+`ez2cv.chart` 3.1: timing lives under one `timing` object, fixed and ramped BPM
 segments declare their interpolation, meter changes are tick-addressed events,
 and derived statistics live under `analysis`.
 

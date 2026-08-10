@@ -15,9 +15,9 @@ from ez2cv.detection.beat import BeatEvent
 from ez2cv.detection.tracking import RawNote
 
 
-RAW_SCHEMA_VERSION = "3.0"
+RAW_SCHEMA_VERSION = "3.1"
 CHART_FORMAT = "ez2cv.chart"
-CHART_VERSION = "3.0"
+CHART_VERSION = "3.1"
 
 
 def _reject_constant(value: str) -> None:
@@ -52,6 +52,7 @@ def serialize_raw(raw: RawChart) -> dict:
         "schema_version": RAW_SCHEMA_VERSION,
         "meta": {
             "song": raw.song_name,
+            "difficulty": raw.difficulty,
             "skin": raw.skin_name,
             "key_mode": raw.key_mode,
             "normal_lane_count": raw.normal_lane_count,
@@ -118,8 +119,11 @@ def read_raw(path: str | Path) -> RawChart:
                 f"unsupported schema_version {payload['schema_version']!r}; "
                 f"expected {RAW_SCHEMA_VERSION!r}")
         meta = payload["meta"]
+        if meta["difficulty"] not in {"NM", "HD", "MX", "SC"}:
+            raise ValueError("invalid difficulty")
         raw = RawChart(
             song_name=str(meta["song"]),
+            difficulty=str(meta["difficulty"]),
             skin_name=str(meta["skin"]),
             key_mode=str(meta["key_mode"]),
             tracks=tuple(TrackMetadata(
@@ -250,6 +254,7 @@ def serialize_chart(chart: Chart) -> dict:
         "version": CHART_VERSION,
         "meta": {
             "song": chart.song_name,
+            "difficulty": chart.difficulty,
             "key_mode": chart.key_mode,
             "normal_lane_count": sum(track.role == "normal"
                                      for track in chart.tracks),
@@ -290,6 +295,8 @@ def read_chart(path: str | Path) -> dict:
                 f"unsupported chart {chart.get('format')!r} "
                 f"version {chart.get('version')!r}")
         meta, timing, notes = chart["meta"], chart["timing"], chart["notes"]
+        if meta["difficulty"] not in {"NM", "HD", "MX", "SC"}:
+            raise ValueError("invalid difficulty")
         tracks = meta["tracks"]
         lane_count = len(tracks)
         resolution = int(timing["ticks_per_quarter"])
@@ -343,17 +350,18 @@ def read_chart(path: str | Path) -> dict:
     return chart
 
 
-def output_dir(song_name: str, *, root: str | Path = "out") -> Path:
-    return Path(root) / song_name
+def output_dir(song_name: str, difficulty: str, *,
+               root: str | Path = "out") -> Path:
+    return Path(root) / song_name / difficulty
 
 
 def write_raw(raw: RawChart, *, root: str | Path = "out") -> Path:
-    path = output_dir(raw.song_name, root=root) / f"{raw.song_name}_raw.json"
+    path = output_dir(raw.song_name, raw.difficulty, root=root) / f"{raw.song_name}_raw.json"
     _dump(serialize_raw(raw), path)
     return path
 
 
 def write_chart(chart: Chart, *, root: str | Path = "out") -> Path:
-    path = output_dir(chart.song_name, root=root) / f"{chart.song_name}_chart.json"
+    path = output_dir(chart.song_name, chart.difficulty, root=root) / f"{chart.song_name}_chart.json"
     _dump(serialize_chart(chart), path)
     return path

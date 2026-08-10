@@ -54,6 +54,7 @@ class ChartNote:
 @dataclass
 class Chart:
     song_name: str
+    difficulty: str
     key_mode: str
     tracks: tuple[TrackMetadata, ...]
     tick_resolution: int
@@ -73,7 +74,7 @@ class Chart:
         bpm_lo = min(s.bpm_start for s in self.bpm_segments)
         bpm_hi = max(s.bpm_end for s in self.bpm_segments)
         lines = [
-            f"=== Chart — {len(self.notes)} notes, "
+            f"=== Chart — {self.difficulty}, {len(self.notes)} notes, "
             f"{len(self.bpm_segments)} bpm seg(s), "
             f"{len(self.variant_measures)} variant run(s) ===",
             f"  time signature   : {self.global_time_sig}",
@@ -116,6 +117,7 @@ def build_chart(raw: RawChart) -> Chart:
 
     return Chart(
         song_name=raw.song_name,
+        difficulty=raw.difficulty,
         key_mode=raw.key_mode,
         tracks=raw.tracks,
         tick_resolution=raw.tick_resolution,

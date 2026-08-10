@@ -21,6 +21,7 @@ from ez2cv.io import (read_chart, read_raw, serialize_chart, serialize_raw,
 def _raw_chart() -> RawChart:
     return RawChart(
         song_name="demo",
+        difficulty="SC",
         skin_name="ONGEKI",
         key_mode="5b",
         tracks=(
@@ -74,6 +75,7 @@ class RawCheckpointTest(unittest.TestCase):
         self.assertEqual(loaded.tracks[0].role, "overlay")
         chart = build_chart(loaded)
         self.assertEqual(chart.song_name, "demo")
+        self.assertEqual(chart.difficulty, "SC")
         self.assertEqual(len(chart.notes), 2)
         self.assertEqual(chart.notes[0].start_tick, 192)
         self.assertEqual(chart.notes[1].end_tick, 576)
@@ -123,7 +125,8 @@ class RawCheckpointTest(unittest.TestCase):
 
     def test_checkpoint_survives_chart_failure(self):
         raw = _raw_chart()
-        config = SimpleNamespace(song_name="demo", summary=lambda: None)
+        config = SimpleNamespace(song_name="demo", difficulty="SC",
+                                 summary=lambda: None)
         with (
             tempfile.TemporaryDirectory() as temp_dir,
             chdir(temp_dir),
@@ -135,7 +138,7 @@ class RawCheckpointTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 with redirect_stdout(StringIO()):
                     run("ignored.toml", chart_image=False, progress=False)
-            self.assertTrue(Path("out/demo/demo_raw.json").is_file())
+            self.assertTrue(Path("out/demo/SC/demo_raw.json").is_file())
 
     def test_chart_keeps_notes_before_first_observed_barline(self):
         raw = _raw_chart()
@@ -158,7 +161,8 @@ class RawCheckpointTest(unittest.TestCase):
 
         payload = serialize_chart(chart)
         self.assertEqual((payload["format"], payload["version"]),
-                         ("ez2cv.chart", "3.0"))
+                         ("ez2cv.chart", "3.1"))
+        self.assertEqual(payload["meta"]["difficulty"], "SC")
         self.assertEqual(payload["timing"]["meter_events"], [
             {"start_tick": 0, "numerator": 4, "denominator": 4},
             {"start_tick": 768, "numerator": 3, "denominator": 4},

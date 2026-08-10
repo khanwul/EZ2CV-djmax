@@ -41,6 +41,8 @@ Run the existing tests:
 uv run python -m unittest discover -s tests -v
 ```
 
+Set `setup.difficulty` to `NM`, `HD`, `MX`, or `SC`.
+
 Run every song config directly under `config/` in filename order (excluding the
 `config/song.toml` template):
 
@@ -58,10 +60,10 @@ The configured skin's local template images must exist under `config/skins/djmax
 
 ## Output
 
-The inherited pipeline writes two files under `out/<song>/`:
+The pipeline writes two files under `out/<song>/<difficulty>/`:
 
-- `<song>_raw.json`: reloadable millisecond-domain checkpoint (schema 3.0)
-- `<song>_chart.json`: `ez2cv.chart` 3.0 chart with explicit tempo and meter timelines
+- `<song>_raw.json`: reloadable millisecond-domain checkpoint (schema 3.1)
+- `<song>_chart.json`: `ez2cv.chart` 3.1 chart with explicit tempo and meter timelines
 
 EZ2ON-specific predicted combo statistics were removed because DJMAX scoring behavior has not been verified.
 
