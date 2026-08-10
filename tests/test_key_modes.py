@@ -45,7 +45,7 @@ MODES = {
         "pitch": 80,
         "height": 30,
         "timing_offset": 0,
-        "names": ["L", "K1", "K2", "K3", "K4", "K5", "K6", "R", "SIDE_L", "SIDE_R"],
+        "names": ["SIDE_L", "K1", "K2", "K3", "L", "R", "K4", "K5", "K6", "SIDE_R"],
     },
 }
 
@@ -175,7 +175,7 @@ class KeyModeConfigTest(unittest.TestCase):
 
     def test_8b_is_six_normal_tracks_plus_l_r_and_side_tracks(self):
         cal = self._load("8b")
-        left, right = cal.lanes[0], cal.lanes[7]
+        left, right = cal.lanes[4:6]
 
         self.assertEqual((left.name, right.name), ("L", "R"))
         for lane in (left, right):
@@ -189,7 +189,7 @@ class KeyModeConfigTest(unittest.TestCase):
             self.assertEqual(lane.timing_offset_px, -5)
             self.assertFalse(lane.include_in_consensus)
 
-        side_left, side_right = cal.lanes[8:10]
+        side_left, side_right = cal.lanes[0], cal.lanes[9]
         self.assertEqual((side_left.name, side_right.name), ("SIDE_L", "SIDE_R"))
         self.assertEqual(
             (side_left.x_range, side_right.x_range), ((720, 960), (960, 1200))

@@ -299,6 +299,10 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
     field_left  = int(normal_cfg["field_left"])
     lane_width  = int(normal_cfg["lane_width"])
     index_start = int(normal_cfg.get("index_start", 1))
+    normal_indices = [int(value) for value in normal_cfg.get(
+        "indices", range(index_start, index_start + normal_lane_count))]
+    if len(normal_indices) != normal_lane_count:
+        raise ConfigError("normal lane indices must match normal_lane_count")
     margin      = int(profile["matching"].get("roi_x_margin", 0))
     meas        = profile["measurements"]
 
@@ -378,7 +382,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
             _common(template_set, allowed)
 
         lanes.append(LaneConfig(
-            index=index_start + i,
+            index=normal_indices[i],
             name=f"K{i + 1}",
             role="normal",
             color=color,

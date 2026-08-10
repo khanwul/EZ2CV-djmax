@@ -15,7 +15,7 @@ line_y = 755
 [normal_lanes]
 field_left = 720
 lane_width = 80
-index_start = 1
+indices = [1, 2, 3, 6, 7, 8]
 note_height = 30
 trigger_y_top = 725
 tail_release_offset_px = 0 # not calibrated yet
@@ -35,7 +35,7 @@ note_width_px = 72
 note_height_px = 30
 
 [[overlay_tracks]]
-index = 0
+index = 4
 name = "L"
 x_range = [720, 960]
 color = "red"
@@ -50,7 +50,7 @@ min_longnote_px = 35
 include_in_consensus = false
 
 [[overlay_tracks]]
-index = 7
+index = 5
 name = "R"
 x_range = [960, 1200]
 color = "red"
@@ -65,7 +65,7 @@ min_longnote_px = 35
 include_in_consensus = false
 
 [[overlay_tracks]]
-index = 8
+index = 0
 name = "SIDE_L"
 x_range = [720, 960]
 color = "cyan"
