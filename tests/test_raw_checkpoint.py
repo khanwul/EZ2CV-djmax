@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from ez2cv.chart import build_chart
 from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.cli import run
+from ez2cv.cli import main, run
 from ez2cv.detection import RawChart, TrackMetadata
 from ez2cv.detection.barline import BarlineEvent
 from ez2cv.detection.beat import BeatEvent
@@ -51,6 +51,18 @@ def _raw_chart() -> RawChart:
 
 
 class RawCheckpointTest(unittest.TestCase):
+    def test_no_input_runs_every_song_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir):
+            config = Path("config")
+            (config / "profiles").mkdir(parents=True)
+            for path in (config / "z.toml", config / "a.toml",
+                         config / "song.toml", config / "profiles/p.toml"):
+                path.write_text("", encoding="utf-8")
+            with patch("ez2cv.cli.run") as run_all:
+                self.assertEqual(main([]), 0)
+            self.assertEqual([call.args[0] for call in run_all.call_args_list],
+                             [config / "a.toml", config / "z.toml"])
+
     def test_raw_json_round_trip_and_chart_rebuild(self):
         raw = _raw_chart()
         with tempfile.TemporaryDirectory() as temp_dir:

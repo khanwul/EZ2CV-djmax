@@ -41,7 +41,14 @@ Run the existing tests:
 uv run python -m unittest discover -s tests -v
 ```
 
-The inherited CLI remains:
+Run every song config directly under `config/` in filename order (excluding the
+`config/song.toml` template):
+
+```bash
+uv run ez2cv
+```
+
+Or run one config explicitly:
 
 ```bash
 uv run ez2cv "config/<song>.toml"

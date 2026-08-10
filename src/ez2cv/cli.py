@@ -13,7 +13,7 @@ from ez2cv.detection import DetectionPipeline
 from ez2cv.io import output_dir, read_raw, write_chart, write_raw
 
 
-DEFAULT_INPUT = "config/song.toml"
+TEMPLATE_INPUT = "config/song.toml"
 _VIDEO_FULL = ""
 
 
@@ -113,6 +113,7 @@ def run_from_raw(raw_path: str | Path, *, chart_image: bool = True) -> Path:
 _EPILOG = """\
 examples
 --------
+  ez2cv
   ez2cv config/GEHENNA.toml
   ez2cv config/GEHENNA.toml --debug-video 500:2000
   ez2cv out/GEHENNA/GEHENNA_raw.json --from-raw
@@ -127,8 +128,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "input", nargs="?", default=DEFAULT_INPUT,
-        help=f"song TOML or raw JSON (default: {DEFAULT_INPUT!r})")
+        "input", nargs="?",
+        help="song TOML or raw JSON (default: every config/*.toml song)")
     parser.add_argument(
         "--from-raw", action="store_true",
         help="skip video detection and rebuild the chart from raw JSON")
@@ -148,25 +149,35 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
-    source = Path(args.input)
-    if not source.is_file():
-        print(f"input not found: {source}", file=sys.stderr)
+    sources = ([Path(args.input)] if args.input else
+               [path for path in sorted(Path("config").glob("*.toml"))
+                if path.as_posix() != TEMPLATE_INPUT])
+    if not sources:
+        print("no song configs found in config/", file=sys.stderr)
+        return 2
+    if missing := next((path for path in sources if not path.is_file()), None):
+        print(f"input not found: {missing}", file=sys.stderr)
+        return 2
+    if args.from_raw and not args.input:
+        print("--from-raw requires an input JSON", file=sys.stderr)
         return 2
     if args.from_raw and (args.debug_png or args.debug_video is not None):
         print("detection debug options cannot be used with --from-raw",
               file=sys.stderr)
         return 2
-    try:
-        if args.from_raw:
-            run_from_raw(source, chart_image=args.chart_image)
-        else:
-            run(source, chart_image=args.chart_image,
-                debug_png=args.debug_png, debug_video=args.debug_video,
-                progress=not args.quiet)
-    except (ConfigError, OSError, RuntimeError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    return 0
+    failed = False
+    for source in sources:
+        try:
+            if args.from_raw:
+                run_from_raw(source, chart_image=args.chart_image)
+            else:
+                run(source, chart_image=args.chart_image,
+                    debug_png=args.debug_png, debug_video=args.debug_video,
+                    progress=not args.quiet)
+        except (ConfigError, OSError, RuntimeError, ValueError) as exc:
+            print(f"error [{source}]: {exc}", file=sys.stderr)
+            failed = True
+    return int(failed)
 
 
 if __name__ == "__main__":
