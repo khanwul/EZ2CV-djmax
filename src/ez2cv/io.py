@@ -15,9 +15,10 @@ from ez2cv.detection.beat import BeatEvent
 from ez2cv.detection.tracking import RawNote
 
 
-RAW_SCHEMA_VERSION = "3.1"
+RAW_SCHEMA_VERSION = "3.2"
 CHART_FORMAT = "ez2cv.chart"
-CHART_VERSION = "3.1"
+CHART_VERSION = "3.2"
+_READABLE_VERSIONS = {"3.1", "3.2"}
 
 
 def _reject_constant(value: str) -> None:
@@ -53,6 +54,7 @@ def serialize_raw(raw: RawChart) -> dict:
         "meta": {
             "song": raw.song_name,
             "difficulty": raw.difficulty,
+            "game": raw.game,
             "skin": raw.skin_name,
             "key_mode": raw.key_mode,
             "normal_lane_count": raw.normal_lane_count,
@@ -60,6 +62,7 @@ def serialize_raw(raw: RawChart) -> dict:
                 "index": track.index,
                 "name": track.name,
                 "role": track.role,
+                "input_type": track.input_type,
                 "color": track.color,
             } for track in raw.tracks],
             "display_resolution": list(raw.display_resolution),
@@ -114,22 +117,26 @@ def read_raw(path: str | Path) -> RawChart:
             source.read_text(encoding="utf-8"),
             parse_constant=_reject_constant,
         )
-        if payload["schema_version"] != RAW_SCHEMA_VERSION:
+        if payload["schema_version"] not in _READABLE_VERSIONS:
             raise ValueError(
                 f"unsupported schema_version {payload['schema_version']!r}; "
-                f"expected {RAW_SCHEMA_VERSION!r}")
+                f"expected one of {sorted(_READABLE_VERSIONS)!r}")
         meta = payload["meta"]
         if meta["difficulty"] not in {"NM", "HD", "MX", "SC"}:
             raise ValueError("invalid difficulty")
         raw = RawChart(
             song_name=str(meta["song"]),
             difficulty=str(meta["difficulty"]),
+            game=str(meta.get("game", "unknown")),
             skin_name=str(meta["skin"]),
             key_mode=str(meta["key_mode"]),
             tracks=tuple(TrackMetadata(
                 index=int(track["index"]),
                 name=str(track["name"]),
                 role=str(track["role"]),
+                input_type=str(track.get(
+                    "input_type",
+                    "key" if track["role"] == "normal" else "unknown")),
                 color=str(track["color"]),
             ) for track in meta["tracks"]),
             display_resolution=tuple(int(v) for v in meta["display_resolution"]),
@@ -175,12 +182,16 @@ def read_raw(path: str | Path) -> RawChart:
     numeric.extend(barline.ms for barline in raw.barlines)
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError(f"invalid raw chart {source}: non-finite number")
-    if raw.fps <= 0 or raw.tick_resolution <= 0 or not raw.tracks:
+    if (not raw.game or raw.fps <= 0 or raw.tick_resolution <= 0
+            or not raw.tracks):
         raise ValueError(f"invalid raw chart {source}: invalid timing or lanes")
     if [track.index for track in raw.tracks] != list(range(raw.key_count)):
         raise ValueError(f"invalid raw chart {source}: invalid track indexes")
     if any(track.role not in {"normal", "overlay"} for track in raw.tracks):
         raise ValueError(f"invalid raw chart {source}: invalid track role")
+    if any(track.input_type not in {"key", "side", "trigger", "unknown"}
+           for track in raw.tracks):
+        raise ValueError(f"invalid raw chart {source}: invalid input type")
     if int(meta["normal_lane_count"]) != raw.normal_lane_count:
         raise ValueError(f"invalid raw chart {source}: normal lane count mismatch")
     if raw.min_bpm <= 0 or raw.max_bpm < raw.min_bpm:
@@ -255,6 +266,7 @@ def serialize_chart(chart: Chart) -> dict:
         "meta": {
             "song": chart.song_name,
             "difficulty": chart.difficulty,
+            "game": chart.game,
             "key_mode": chart.key_mode,
             "normal_lane_count": sum(track.role == "normal"
                                      for track in chart.tracks),
@@ -262,6 +274,7 @@ def serialize_chart(chart: Chart) -> dict:
                 "index": track.index,
                 "name": track.name,
                 "role": track.role,
+                "input_type": track.input_type,
                 "color": track.color,
             } for track in chart.tracks],
             "duration_ms": _ms(chart.stats["structure"]["duration_ms"]),
@@ -290,11 +303,18 @@ def read_chart(path: str | Path) -> dict:
     try:
         chart = json.loads(source.read_text(encoding="utf-8"),
                            parse_constant=_reject_constant)
-        if chart["format"] != CHART_FORMAT or chart["version"] != CHART_VERSION:
+        if (chart["format"] != CHART_FORMAT
+                or chart["version"] not in _READABLE_VERSIONS):
             raise ValueError(
                 f"unsupported chart {chart.get('format')!r} "
                 f"version {chart.get('version')!r}")
         meta, timing, notes = chart["meta"], chart["timing"], chart["notes"]
+        if chart["version"] == "3.1":
+            meta.setdefault("game", "unknown")
+            for track in meta["tracks"]:
+                track.setdefault(
+                    "input_type",
+                    "key" if track["role"] == "normal" else "unknown")
         if meta["difficulty"] not in {"NM", "HD", "MX", "SC"}:
             raise ValueError("invalid difficulty")
         tracks = meta["tracks"]
@@ -305,11 +325,16 @@ def read_chart(path: str | Path) -> dict:
         meters = timing["meter_events"]
         if lane_count <= 0 or resolution <= 0:
             raise ValueError("invalid lanes or tick resolution")
+        if not isinstance(meta["game"], str) or not meta["game"]:
+            raise ValueError("invalid game")
         if [track["index"] for track in tracks] != list(range(lane_count)):
             raise ValueError("invalid track indexes")
         if any(track["role"] not in {"normal", "overlay"}
                for track in tracks):
             raise ValueError("invalid track role")
+        if any(track["input_type"] not in
+               {"key", "side", "trigger", "unknown"} for track in tracks):
+            raise ValueError("invalid input type")
         if meta["normal_lane_count"] != sum(
                 track["role"] == "normal" for track in tracks):
             raise ValueError("normal lane count mismatch")

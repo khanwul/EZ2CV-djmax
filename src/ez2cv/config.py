@@ -96,6 +96,7 @@ class LaneConfig:
     index: int
     name: str
     role: str                           # "normal" | "overlay"
+    input_type: str                     # "key" | "side" | "trigger"
     color: str
     template_set: str
     allowed_types: frozenset[str]       # "tap" | "longnote"
@@ -124,6 +125,7 @@ class RunConfig:
     # --- provenance ----------------------------------------------------------
     song_name: str
     difficulty: str
+    game: str
     skin_name: str
     key_mode: str
     display_resolution: tuple[int, int]
@@ -274,6 +276,10 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
         raise ConfigError(
             f"profile key_mode '{profile_mode}' != song key_mode '{key_mode}'")
 
+    game = str(profile["meta"]["game"]).strip().lower()
+    if not game:
+        raise ConfigError("profile game must not be empty")
+
     normal_lane_count = int(profile["meta"]["normal_lane_count"])
     lane_colors = skin["lane_colors"].get(key_mode)
     if lane_colors is None:
@@ -390,6 +396,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
             index=normal_indices[i],
             name=f"K{i + 1}",
             role="normal",
+            input_type="key",
             color=color,
             template_set=template_set,
             allowed_types=allowed,
@@ -410,6 +417,10 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
 
     for track in profile.get("overlay_tracks", []):
         template_set = str(track["template_set"])
+        input_type = str(track["input_type"]).strip().lower()
+        if input_type not in {"side", "trigger"}:
+            raise ConfigError(
+                f"invalid overlay input_type {input_type!r} for '{track['name']}'")
         allowed = frozenset(str(value) for value in track["allowed_types"])
         channel, stage1_threshold, matching_threshold, templates = \
             _common(template_set, allowed, load_templates=False)
@@ -425,6 +436,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
             index=int(track["index"]),
             name=str(track["name"]),
             role="overlay",
+            input_type=input_type,
             color=str(track["color"]),
             template_set=template_set,
             allowed_types=allowed,
@@ -542,6 +554,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
     return RunConfig(
         song_name=song_name,
         difficulty=difficulty,
+        game=game,
         skin_name=skin_name,
         key_mode=key_mode,
         display_resolution=prof_res,

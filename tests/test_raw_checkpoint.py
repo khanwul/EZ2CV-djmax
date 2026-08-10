@@ -22,16 +22,17 @@ def _raw_chart() -> RawChart:
     return RawChart(
         song_name="demo",
         difficulty="SC",
+        game="djmax_respect_v",
         skin_name="ONGEKI",
         key_mode="5b",
         tracks=(
-            TrackMetadata(0, "SIDE_L", "overlay", "cyan"),
-            TrackMetadata(1, "K1", "normal", "red"),
-            TrackMetadata(2, "K2", "normal", "green"),
-            TrackMetadata(3, "K3", "normal", "red"),
-            TrackMetadata(4, "K4", "normal", "green"),
-            TrackMetadata(5, "K5", "normal", "cyan"),
-            TrackMetadata(6, "SIDE_R", "overlay", "cyan"),
+            TrackMetadata(0, "SIDE_L", "overlay", "side", "cyan"),
+            TrackMetadata(1, "K1", "normal", "key", "red"),
+            TrackMetadata(2, "K2", "normal", "key", "green"),
+            TrackMetadata(3, "K3", "normal", "key", "red"),
+            TrackMetadata(4, "K4", "normal", "key", "green"),
+            TrackMetadata(5, "K5", "normal", "key", "cyan"),
+            TrackMetadata(6, "SIDE_R", "overlay", "side", "cyan"),
         ),
         display_resolution=(1920, 1080),
         video_path="demo.mp4",
@@ -73,6 +74,7 @@ class RawCheckpointTest(unittest.TestCase):
         self.assertEqual(loaded, raw)
         self.assertEqual(loaded.tracks[0].name, "SIDE_L")
         self.assertEqual(loaded.tracks[0].role, "overlay")
+        self.assertEqual(loaded.tracks[0].input_type, "side")
         chart = build_chart(loaded)
         self.assertEqual(chart.song_name, "demo")
         self.assertEqual(chart.difficulty, "SC")
@@ -97,6 +99,21 @@ class RawCheckpointTest(unittest.TestCase):
 
         self.assertEqual([note.timing_sigma_ms for note in loaded.notes],
                          [0.0, 0.0])
+
+    def test_v31_raw_gets_unknown_game_and_overlay_input_type(self):
+        payload = serialize_raw(_raw_chart())
+        payload["schema_version"] = "3.1"
+        del payload["meta"]["game"]
+        for track in payload["meta"]["tracks"]:
+            del track["input_type"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "raw.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = read_raw(path)
+
+        self.assertEqual(loaded.game, "unknown")
+        self.assertEqual(loaded.tracks[0].input_type, "unknown")
+        self.assertEqual(loaded.tracks[1].input_type, "key")
 
     def test_negative_timing_sigma_is_rejected(self):
         payload = serialize_raw(_raw_chart())
@@ -161,7 +178,8 @@ class RawCheckpointTest(unittest.TestCase):
 
         payload = serialize_chart(chart)
         self.assertEqual((payload["format"], payload["version"]),
-                         ("ez2cv.chart", "3.1"))
+                         ("ez2cv.chart", "3.2"))
+        self.assertEqual(payload["meta"]["game"], "djmax_respect_v")
         self.assertEqual(payload["meta"]["difficulty"], "SC")
         self.assertEqual(payload["timing"]["meter_events"], [
             {"start_tick": 0, "numerator": 4, "denominator": 4},
@@ -171,11 +189,27 @@ class RawCheckpointTest(unittest.TestCase):
         self.assertEqual(payload["notes"][0]["id"], 0)
         self.assertIs(payload["notes"][0]["off_grid"], False)
         self.assertEqual(payload["meta"]["tracks"][0]["name"], "SIDE_L")
+        self.assertEqual(payload["meta"]["tracks"][0]["input_type"], "side")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_chart(chart, root=temp_dir)
             loaded = read_chart(path)
         self.assertEqual(loaded, payload)
+
+    def test_v31_chart_gets_unknown_game_and_overlay_input_type(self):
+        payload = serialize_chart(build_chart(_raw_chart()))
+        payload["version"] = "3.1"
+        del payload["meta"]["game"]
+        for track in payload["meta"]["tracks"]:
+            del track["input_type"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "chart.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = read_chart(path)
+
+        self.assertEqual(loaded["meta"]["game"], "unknown")
+        self.assertEqual(loaded["meta"]["tracks"][0]["input_type"], "unknown")
+        self.assertEqual(loaded["meta"]["tracks"][1]["input_type"], "key")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # DJMAX RESPECT V — 1920x1080 / 4B / speed 6.0
 
 [meta]
+game = "djmax_respect_v"
 display_resolution = [1920, 1080]
 key_mode = "4b"
 normal_lane_count = 4
@@ -38,6 +39,7 @@ note_height_px = 44
 [[overlay_tracks]]
 index = 0
 name = "SIDE_L"
+input_type = "side"
 x_range = [720, 960]
 color = "cyan"
 template_set = "side_cyan"
@@ -53,6 +55,7 @@ include_in_consensus = false
 [[overlay_tracks]]
 index = 5
 name = "SIDE_R"
+input_type = "side"
 x_range = [960, 1200]
 color = "cyan"
 template_set = "side_cyan"

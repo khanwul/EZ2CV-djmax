@@ -55,6 +55,7 @@ class ChartNote:
 class Chart:
     song_name: str
     difficulty: str
+    game: str
     key_mode: str
     tracks: tuple[TrackMetadata, ...]
     tick_resolution: int
@@ -118,6 +119,7 @@ def build_chart(raw: RawChart) -> Chart:
     return Chart(
         song_name=raw.song_name,
         difficulty=raw.difficulty,
+        game=raw.game,
         key_mode=raw.key_mode,
         tracks=raw.tracks,
         tick_resolution=raw.tick_resolution,

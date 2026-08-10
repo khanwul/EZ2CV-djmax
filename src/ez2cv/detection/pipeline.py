@@ -73,6 +73,7 @@ class TrackMetadata:
     index: int
     name: str
     role: str
+    input_type: str
     color: str
 
 
@@ -81,6 +82,7 @@ class RawChart:
     """Serializable ms-domain checkpoint produced by video detection."""
     song_name: str
     difficulty: str
+    game: str
     skin_name: str
     key_mode: str
     tracks: tuple[TrackMetadata, ...]
@@ -235,9 +237,11 @@ class DetectionPipeline:
         return RawChart(
             song_name=self.cal.song_name,
             difficulty=self.cal.difficulty,
+            game=self.cal.game,
             skin_name=self.cal.skin_name,
             key_mode=self.cal.key_mode,
-            tracks=tuple(TrackMetadata(ln.index, ln.name, ln.role, ln.color)
+            tracks=tuple(TrackMetadata(ln.index, ln.name, ln.role,
+                                       ln.input_type, ln.color)
                          for ln in self.cal.lanes),
             display_resolution=self.cal.display_resolution,
             video_path=str(self.cal.video_path),

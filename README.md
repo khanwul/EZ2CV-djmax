@@ -62,8 +62,9 @@ The configured skin's local template images must exist under `config/skins/djmax
 
 The pipeline writes two files under `out/<song>/<difficulty>/`:
 
-- `<song>_raw.json`: reloadable millisecond-domain checkpoint (schema 3.1)
-- `<song>_chart.json`: `ez2cv.chart` 3.1 chart with explicit tempo and meter timelines
+- `<song>_raw.json`: reloadable millisecond-domain checkpoint (schema 3.2)
+- `<song>_chart.json`: `ez2cv.chart` 3.2 chart with explicit game and input types,
+  tempo, and meter timelines
 
 EZ2ON-specific predicted combo statistics were removed because DJMAX scoring behavior has not been verified.
 

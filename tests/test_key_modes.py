@@ -129,6 +129,7 @@ class KeyModeConfigTest(unittest.TestCase):
                 normals = [lane for lane in cal.lanes if lane.role == "normal"]
 
                 self.assertEqual(cal.key_mode, mode)
+                self.assertEqual(cal.game, "djmax_respect_v")
                 self.assertEqual(cal.normal_lane_count, expected["normal"])
                 self.assertEqual(cal.track_count, expected["tracks"])
                 self.assertEqual([lane.name for lane in cal.lanes], expected["names"])
@@ -173,6 +174,7 @@ class KeyModeConfigTest(unittest.TestCase):
                 self.assertEqual(right.x_range, (960, 1200))
                 for lane in (left, right):
                     self.assertEqual(lane.role, "overlay")
+                    self.assertEqual(lane.input_type, "side")
                     self.assertEqual(lane.template_set, "side_cyan")
                     self.assertEqual(lane.allowed_types, {"longnote"})
                     self.assertEqual(lane.templates, {})
@@ -187,6 +189,7 @@ class KeyModeConfigTest(unittest.TestCase):
         self.assertEqual((left.name, right.name), ("L", "R"))
         for lane in (left, right):
             self.assertEqual(lane.role, "overlay")
+            self.assertEqual(lane.input_type, "trigger")
             self.assertEqual(lane.x_range[1] - lane.x_range[0], 240)
             self.assertEqual(lane.template_set, "lr_red")
             self.assertEqual(lane.allowed_types, {"tap", "longnote"})
@@ -202,6 +205,7 @@ class KeyModeConfigTest(unittest.TestCase):
             (side_left.x_range, side_right.x_range), ((720, 960), (960, 1200))
         )
         for lane in (side_left, side_right):
+            self.assertEqual(lane.input_type, "side")
             self.assertEqual(lane.template_set, "side_cyan")
             self.assertEqual(lane.allowed_types, {"longnote"})
             self.assertEqual(lane.timing_offset_px, -17)
