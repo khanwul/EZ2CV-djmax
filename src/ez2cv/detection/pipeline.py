@@ -141,6 +141,9 @@ class RawChart:
         mi = self.barline_interval_frames()
         # beats per measure, if the LED flashes once per beat: a sanity ratio
         beats_per_measure = (mi / bi) if bi > 0 else 0.0
+        sigmas = [note.timing_sigma_ms for note in self.notes]
+        sigma_median = float(np.median(sigmas)) if sigmas else 0.0
+        sigma_p95 = float(np.percentile(sigmas, 95)) if sigmas else 0.0
         lines = [
             f"=== Detection result — {self.duration_ms / 1000:.1f}s, "
             f"{self.frame_count} frames ===",
@@ -148,6 +151,8 @@ class RawChart:
             f"({len(self.taps)} tap, {len(self.longnotes)} longnote)",
             f"  crossings    : {extr} extrapolated ({extr * 100 // n}%), "
             f"{n - extr} interpolated",
+            f"  timing sigma : median {sigma_median:.2f} ms, "
+            f"p95 {sigma_p95:.2f} ms",
             f"  orphan tails : {self.orphan_tails} (dropped)",
             f"  beats        : {len(self.beats)}  "
             f"(median interval {bi:.1f} frames)",

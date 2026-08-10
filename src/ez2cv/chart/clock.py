@@ -3,7 +3,7 @@ EZ2CV — chart conversion / tick_clock : BPMSegment + TickClock (ms ↔ tick)
 ===============================================================================
 The chart world is tick-based; the raw world is ms-based. Everything that needs
 to translate between the two goes through ``TickClock``. There is exactly one
-TickClock per song, built from the BPM segments estimated by ``bpm_estimator``.
+clock per song, built from the anchors selected by timeline inference.
 
 Why a piecewise-LINEAR model
 ----------------------------
@@ -28,7 +28,8 @@ Tick origin convention
 ----------------------
 Tick 0 corresponds to ``measure_zero_ms`` (the moment the first measure line
 crosses the judgment line). Pre-anacrusis notes therefore live at NEGATIVE tick.
-Construction (``TickClock.from_drafts``) handles the shift internally.
+Construction from selected anchors keeps every retained timing landmark on an
+exact tick. ``from_drafts`` remains for callers that already own a BPM model.
 """
 
 from __future__ import annotations
@@ -139,9 +140,10 @@ class BPMDraft:
 class TickClock:
     """Single ms ↔ tick gateway for the whole chart conversion pipeline.
 
-    Construct via :meth:`from_drafts`. After construction, ``segments`` is a
+    Construct via :meth:`from_anchors` or :meth:`from_drafts`. After
+    construction, ``segments`` is a
     list of tick-bounded ``BPMSegment``\\s and ``segment_start_ms`` is their
-    aligned ms-anchors. Tick 0 corresponds to ``origin_ms``.
+    aligned ms-anchors.
     """
 
     def __init__(self, segments: list[BPMSegment],
@@ -152,6 +154,68 @@ class TickClock:
         self.segments = segments
         self.segment_start_ms = segment_start_ms
         self.tick_resolution = tick_resolution
+        self._anchor_ms: np.ndarray | None = None
+        self._anchor_ticks: np.ndarray | None = None
+
+    @classmethod
+    def from_anchors(cls, anchor_ms: Iterable[float],
+                     anchor_ticks: Iterable[float], *,
+                     tick_resolution: int = 192,
+                     max_error_ms: float = 20.0,
+                     min_bpm: float = 0.0,
+                     max_bpm: float = 0.0) -> "TickClock":
+        """Build an exact piecewise-linear clock through measured anchors.
+
+        Ramer-Douglas-Peucker removes redundant collinear anchors. Conversion
+        and serialized BPM segments use the same retained knots, so tempo
+        steps cannot accumulate timing drift.
+        """
+        ms = np.asarray(list(anchor_ms), dtype=float)
+        ticks = np.asarray(list(anchor_ticks), dtype=float)
+        if len(ms) < 2 or len(ms) != len(ticks):
+            raise ValueError("at least two aligned clock anchors required")
+        if np.any(np.diff(ms) <= 0) or np.any(np.diff(ticks) <= 0):
+            raise ValueError("clock anchors must be strictly increasing")
+
+        spans: list[tuple[int, int]] = []
+        stack = [(0, len(ms) - 1)]
+        while stack:
+            start, end = stack.pop()
+            if end - start <= 1:
+                spans.append((start, end))
+                continue
+            fraction = ((ticks[start:end + 1] - ticks[start])
+                        / (ticks[end] - ticks[start]))
+            fitted = ms[start] + fraction * (ms[end] - ms[start])
+            residual = np.abs(ms[start:end + 1] - fitted)
+            split = start + int(np.argmax(residual))
+            if residual.max() <= max_error_ms or split in (start, end):
+                spans.append((start, end))
+            else:
+                stack.extend(((split, end), (start, split)))
+        spans.sort()
+
+        segments: list[BPMSegment] = []
+        starts: list[float] = []
+        for start, end in spans:
+            bpm = ((ticks[end] - ticks[start]) * 60_000.0
+                   / (tick_resolution * (ms[end] - ms[start])))
+            if min_bpm > 0:
+                bpm = max(min_bpm, bpm)
+            if max_bpm > 0:
+                bpm = min(max_bpm, bpm)
+            segments.append(BPMSegment(
+                int(round(ticks[start])), int(round(ticks[end])), bpm, bpm))
+            starts.append(float(ms[start]))
+
+        clock = cls(segments, starts, tick_resolution=tick_resolution)
+        # Conversion follows the denoised RDP knots, not every frame-quantised
+        # flash. Every retained tempo change remains an exact anchor while
+        # constant runs no longer inherit ±1-frame beat jitter.
+        knot_indices = [spans[0][0], *(end for _, end in spans)]
+        clock._anchor_ms = ms[knot_indices]
+        clock._anchor_ticks = ticks[knot_indices]
+        return clock
 
     # ------------------------------------------------------------------ #
     @classmethod
@@ -227,12 +291,26 @@ class TickClock:
 
     # ------------------------------------------------------------------ #
     def ms_to_tick(self, ms: float) -> float:
+        if self._anchor_ms is not None and self._anchor_ticks is not None:
+            i = int(np.searchsorted(self._anchor_ms, ms)) - 1
+            i = min(max(i, 0), len(self._anchor_ms) - 2)
+            fraction = ((ms - self._anchor_ms[i])
+                        / (self._anchor_ms[i + 1] - self._anchor_ms[i]))
+            return float(self._anchor_ticks[i] + fraction *
+                         (self._anchor_ticks[i + 1] - self._anchor_ticks[i]))
         i = self._seg_for_ms(ms)
         seg = self.segments[i]
         seg_ms = self.segment_start_ms[i]
         return seg.tick_at(ms - seg_ms, tick_resolution=self.tick_resolution)
 
     def tick_to_ms(self, tick: float) -> float:
+        if self._anchor_ms is not None and self._anchor_ticks is not None:
+            i = int(np.searchsorted(self._anchor_ticks, tick)) - 1
+            i = min(max(i, 0), len(self._anchor_ticks) - 2)
+            fraction = ((tick - self._anchor_ticks[i])
+                        / (self._anchor_ticks[i + 1] - self._anchor_ticks[i]))
+            return float(self._anchor_ms[i] + fraction *
+                         (self._anchor_ms[i + 1] - self._anchor_ms[i]))
         i = self._seg_for_tick(tick)
         seg = self.segments[i]
         seg_ms = self.segment_start_ms[i]

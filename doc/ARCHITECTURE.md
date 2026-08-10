@@ -19,11 +19,10 @@ src/ez2cv/
 │   └── barline.py         measure-line detection and tracking
 ├── chart/
 │   ├── pipeline.py        RawChart → Chart
-│   ├── barline.py         missing/false barline reconstruction
-│   ├── bpm_barline.py     primary barline-domain BPM estimator
-│   ├── bpm.py             beat-domain BPM fallback
-│   ├── clock.py           piecewise-linear ms ↔ tick conversion
-│   ├── meter.py           time signatures and barline ticks
+│   ├── timeline.py        joint meter/tempo inference
+│   ├── barline.py         arbitrary meter-sequence reconstruction
+│   ├── clock.py           anchor-based ms ↔ tick conversion
+│   ├── meter.py           time-signature data
 │   └── quantize.py        musical-grid snapping
 ├── io.py                  raw/chart JSON read and atomic write
 └── visualize.py           final chart renderer
@@ -109,17 +108,21 @@ Important invariants:
 - The barline detector reuses Stage 1 projections and uses two-row energy to
   tolerate sub-pixel line motion.
 - Beat events report the rise edge of the POW LED flash.
-- Tracking interpolates judgment-line crossings and marks extrapolated events.
+- Tracking interpolates bracketed judgment-line crossings. Tap near misses use
+  a regression over the latest local trajectory, with global scroll speed as a
+  gate and fallback. Longnote endpoints keep their calibrated paired-duration
+  projection. Each note records the resulting timing uncertainty.
 - Detection stops at milliseconds and has no BPM or grid dependency.
 
 ## Raw checkpoint
 
 `RawChart` contains only JSON-safe primitives and event dataclasses:
 
-- song/skin/key-mode metadata and lane colors;
+- song/skin/key-mode metadata and ordered normal/overlay tracks;
 - FPS, frame count, video resolution, and source path;
 - tick resolution and BPM bounds needed for chart reconstruction;
-- raw notes, beats, barlines, confidence, and extrapolation diagnostics.
+- raw notes, beats, barlines, confidence, extrapolation diagnostics, and
+  `timing_sigma_ms` (legacy checkpoints default it to zero).
 
 It does not retain `RunConfig`, OpenCV images, template arrays, or filesystem
 configuration state. `serialize_raw()` and `read_raw()` form a schema-versioned
@@ -130,22 +133,34 @@ round trip.
 `build_chart(raw)` performs no video or TOML I/O:
 
 1. Index detected barlines on the beat stream.
-2. Drop false barlines and infer missing boundaries.
-3. Determine global and variant meters.
-4. Estimate BPM from measure spans; fall back to beat intervals when meters are
-   unreliable.
-5. Build a piecewise-linear `TickClock` anchored at the first barline.
-6. Convert note times to ticks and snap heads to
-   `{1/4, 1/8, 1/12, 1/16, 1/24, 1/32}` grids.
+2. Use dynamic programming to drop false lines, infer hidden boundaries, and
+   choose each measure's numerator from 1 through 7.
+3. Fit stable tempo runs across all their barlines. Keep intermediate anchors
+   only when the raw notes would otherwise leave the supported rhythm grid.
+4. Add a beat anchor for a clear tempo step inside a single measure.
+5. Build one piecewise-linear `TickClock` from those selected anchors.
+6. Convert note times to ticks. Each measure starts with the
+   `{1/4, 1/8, 1/12, 1/16, 1/24, 1/32}` vocabulary and opts into
+   `1/48`, `1/64`, `1/96`, or `1/192` only when multiple distinct onsets
+   support the finer grid. Near-simultaneous chord lanes count as one onset.
+   `fine_grid_ratio` records notes rescued by that expansion. A remaining miss
+   within twice its measured `timing_sigma_ms` is reported separately as
+   `timing_uncertain_ratio`; `timing_outlier_ratio` is reserved for misses not
+   explained by crossing uncertainty. `base_grid_outlier_ratio` preserves the
+   sum of all three for before/after comparison, and
+   `measure_grid_max_denominator` records the selected level per measure.
 7. Snap long-note lengths relative to their snapped heads.
 
 The output `Chart` owns only chart metadata, BPM segments, time signatures,
 notes, barline ticks, and statistics. Neither `RawChart` nor `Chart` depends on
-detection configuration objects.
+detection configuration objects. `write_chart()` serializes it as
+`ez2cv.chart` 3.0: timing lives under one `timing` object, fixed and ramped BPM
+segments declare their interpolation, meter changes are tick-addressed events,
+and derived statistics live under `analysis`.
 
 ## Verification
 
 `tests/` contains standard-library `unittest` checks for configuration
-consistency, clock round trips, grid snapping, variant meters, missing barline
-reconstruction, schema rejection, and raw checkpoint round trips followed by
-chart regeneration.
+consistency, clock round trips, grid snapping, arbitrary meters, missing
+barline reconstruction, mid-measure tempo steps, schema rejection, and raw
+checkpoint round trips followed by chart regeneration.

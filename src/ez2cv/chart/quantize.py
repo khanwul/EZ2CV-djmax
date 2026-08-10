@@ -1,27 +1,10 @@
-"""
-EZ2CV — chart conversion / quantizer : snap raw ticks to a musical grid
-===============================================================================
-A note's raw tick coordinate (from ms→tick conversion) is a real number near
-— but rarely exactly on — one of the allowed grid positions. The quantiser
-picks the grid that minimises a cost balancing PROXIMITY against COMPLEXITY:
+"""Measure-adaptive musical-grid snapping.
 
-    cost(grid) = |raw_tick − grid_tick|  +  α · log2(denom)
-                                            └── coarse-first regulariser
-
-A note close to two candidates (e.g. 1/16 vs 1/48) snaps to the COARSER one
-because the log term penalises larger denominators. Context-awareness adds a
-penalty to triplet denominators (1/12, 1/24, 1/48) when no neighbouring note
-is on a triplet — a single off-grid note shouldn't drag the whole measure into
-a triplet interpretation.
-
-Allowed grid
-------------
-    {1/4, 1/8, 1/12, 1/16, 1/24, 1/32}
-
-If the best candidate is still > ``max_tolerance_tick`` away, the note is
-flagged as **off-grid** and kept at its rounded tick — the chart records the
-fact so chart conversion's sanity check can act on the off-grid ratio (>5 % → re-try
-octave / time signature; >5 % still → surface to the user).
+Ordinary measures use the base 1/4..1/32 vocabulary.  A measure may opt into
+1/48, 1/64, 1/96, then 1/192 only when several distinct onsets support the
+finer vocabulary and its lower residual pays for a complexity penalty.  This
+keeps one noisy note from making every position valid while preserving charts
+that genuinely use the game's native fine tick positions.
 """
 
 from __future__ import annotations
@@ -31,14 +14,22 @@ from dataclasses import dataclass
 import numpy as np
 
 
-# 1/N note denominators allowed for snapping
+# Base 1/N note denominators and progressively finer per-measure vocabularies.
 ALLOWED_DENOMS: tuple[int, ...] = (4, 8, 12, 16, 24, 32)
+ADAPTIVE_DENOMS: tuple[int, ...] = (48, 64, 96, 192)
+MEASURE_GRID_LEVELS: tuple[tuple[int, ...], ...] = tuple(
+    ALLOWED_DENOMS + ADAPTIVE_DENOMS[:level]
+    for level in range(len(ADAPTIVE_DENOMS) + 1)
+)
 TRIPLET_DENOMS: frozenset[int] = frozenset({12, 24})
 
 # tunables
 DEFAULT_ALPHA = 0.5                    # tick cost per bit of denom complexity
 DEFAULT_MAX_TOLERANCE_TICK = 6.0       # 192-tick world: 6 ticks ≈ 1/128
 DEFAULT_TRIPLET_CONTEXT_PENALTY = 1.5  # extra cost for a lone triplet
+MEASURE_GRID_LEVEL_PENALTY = 4.0
+MEASURE_GRID_MIN_OUTLIERS = 2
+MEASURE_GRID_ONSET_MERGE_TICK = 1.0
 
 
 # =============================================================================
@@ -52,6 +43,63 @@ class SnapResult:
     denom: int               # the chosen denominator (matches label)
     off_grid: bool           # True if the snap distance exceeded tolerance
     raw_distance: float      # |raw − snapped|, in ticks
+    fine_grid: bool = False  # rescued by a measure vocabulary finer than 1/32
+    grid_level: int = 0      # index into MEASURE_GRID_LEVELS
+    timing_uncertain: bool = False
+    timing_residual_ms: float = 0.0
+
+
+def grid_distances(raw_ticks, denominators: tuple[int, ...],
+                   *, tick_resolution: int = 192) -> np.ndarray:
+    """Distance from each raw tick to the nearest position in a vocabulary."""
+    ticks = np.asarray(raw_ticks, dtype=float)
+    distances = np.full(len(ticks), np.inf)
+    for denominator in denominators:
+        step = tick_resolution * 4.0 / denominator
+        distances = np.minimum(
+            distances, np.abs(ticks - np.rint(ticks / step) * step))
+    return distances
+
+
+def choose_measure_grid(raw_ticks, *, tick_resolution: int = 192,
+                        max_tolerance_tick: float = DEFAULT_MAX_TOLERANCE_TICK,
+                        ) -> int:
+    """Return the coarsest well-supported adaptive grid level for one measure."""
+    # Chord lanes cross a fraction of a tick apart, but are one timing onset.
+    groups: list[list[float]] = []
+    for tick in sorted(np.asarray(raw_ticks, dtype=float)):
+        if (not groups
+                or tick - groups[-1][-1] > MEASURE_GRID_ONSET_MERGE_TICK):
+            groups.append([float(tick)])
+        else:
+            groups[-1].append(float(tick))
+    ticks = np.array([float(np.mean(group)) for group in groups])
+    if len(ticks) == 0:
+        return 0
+    base = grid_distances(ticks, ALLOWED_DENOMS,
+                          tick_resolution=tick_resolution)
+    if np.count_nonzero(base > max_tolerance_tick) < MEASURE_GRID_MIN_OUTLIERS:
+        return 0
+
+    choices: list[tuple[float, int]] = []
+    for level, denominators in enumerate(MEASURE_GRID_LEVELS):
+        distances = grid_distances(ticks, denominators,
+                                   tick_resolution=tick_resolution)
+        fit = float(np.mean(np.minimum(distances, 24.0) ** 2))
+        choices.append((fit + MEASURE_GRID_LEVEL_PENALTY * level, level))
+    return min(choices)[1]
+
+
+def choose_measure_grids(raw_ticks, barline_ticks,
+                         *, tick_resolution: int = 192) -> list[int]:
+    """Choose one vocabulary level for every interval between barlines."""
+    ticks = np.asarray(raw_ticks, dtype=float)
+    bars = np.asarray(barline_ticks, dtype=float)
+    return [
+        choose_measure_grid(ticks[(start <= ticks) & (ticks < end)],
+                            tick_resolution=tick_resolution)
+        for start, end in zip(bars, bars[1:])
+    ]
 
 
 # =============================================================================
@@ -64,6 +112,8 @@ def snap_tick(raw_tick: float,
               max_tolerance_tick: float = DEFAULT_MAX_TOLERANCE_TICK,
               neighbor_denoms: frozenset[int] | None = None,
               triplet_context_penalty: float = DEFAULT_TRIPLET_CONTEXT_PENALTY,
+              allowed_denoms: tuple[int, ...] = ALLOWED_DENOMS,
+              grid_level: int = 0,
               ) -> SnapResult:
     """Snap one tick. Pass ``neighbor_denoms`` for context-aware triplet bias.
 
@@ -76,7 +126,7 @@ def snap_tick(raw_tick: float,
     )
 
     best = None       # (cost, dist, denom, snapped_int)
-    for n in ALLOWED_DENOMS:
+    for n in allowed_denoms:
         grid_ticks = tick_resolution * 4.0 / n        # ticks per 1/n note
         k = round(raw_tick / grid_ticks)
         snapped = k * grid_ticks
@@ -90,9 +140,15 @@ def snap_tick(raw_tick: float,
 
     _, dist, denom, snapped_int = best
     off_grid = dist > max_tolerance_tick
+    base_distance = float(grid_distances(
+        [raw_tick], ALLOWED_DENOMS,
+        tick_resolution=tick_resolution)[0])
+    fine_grid = (grid_level > 0 and not off_grid
+                 and base_distance > max_tolerance_tick)
     label = "off-grid" if off_grid else f"1/{denom}"
     return SnapResult(tick=snapped_int, label=label, denom=denom,
-                      off_grid=off_grid, raw_distance=dist)
+                      off_grid=off_grid, raw_distance=dist,
+                      fine_grid=fine_grid, grid_level=grid_level)
 
 
 # =============================================================================
@@ -132,6 +188,37 @@ def snap_with_local_context(raw_ticks: list[float],
         out.append(snap_tick(t, tick_resolution=tick_resolution,
                              neighbor_denoms=neigh, **kwargs))
     return out
+
+
+def snap_by_measure(raw_ticks: list[float], barline_ticks: list[int],
+                    *, tick_resolution: int = 192
+                    ) -> tuple[list[SnapResult], list[int]]:
+    """Snap heads with one adaptive vocabulary shared by each measure."""
+    ticks = np.asarray(raw_ticks, dtype=float)
+    bars = np.asarray(barline_ticks, dtype=float)
+    levels = choose_measure_grids(
+        ticks, bars, tick_resolution=tick_resolution)
+    snaps: list[SnapResult | None] = [None] * len(ticks)
+
+    for measure, (start, end) in enumerate(
+            zip(bars, bars[1:])):
+        indices = np.flatnonzero((start <= ticks) & (ticks < end))
+        if not len(indices):
+            continue
+        level = levels[measure]
+        local = [float(ticks[index]) for index in indices]
+        local_snaps = snap_with_local_context(
+            local, tick_resolution=tick_resolution,
+            allowed_denoms=MEASURE_GRID_LEVELS[level], grid_level=level)
+        for index, snap in zip(indices, local_snaps, strict=True):
+            snaps[int(index)] = snap
+
+    # Pickup and post-grid notes retain the conservative base vocabulary.
+    for index, snap in enumerate(snaps):
+        if snap is None:
+            snaps[index] = snap_tick(
+                float(ticks[index]), tick_resolution=tick_resolution)
+    return [snap for snap in snaps if snap is not None], levels
 
 
 def snap_length(raw_length_ticks: float,

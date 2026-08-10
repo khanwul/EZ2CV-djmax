@@ -8,12 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ez2cv.chart import build_chart
+from ez2cv.chart.meter import TimeSignature, TimeSigVariant
 from ez2cv.cli import run
 from ez2cv.detection import RawChart, TrackMetadata
 from ez2cv.detection.barline import BarlineEvent
 from ez2cv.detection.beat import BeatEvent
 from ez2cv.detection.tracking import RawNote
-from ez2cv.io import read_raw, serialize_raw, write_raw
+from ez2cv.io import (read_chart, read_raw, serialize_chart, serialize_raw,
+                      write_chart, write_raw)
 
 
 def _raw_chart() -> RawChart:
@@ -63,6 +65,33 @@ class RawCheckpointTest(unittest.TestCase):
         self.assertEqual(len(chart.notes), 2)
         self.assertEqual(chart.notes[0].start_tick, 192)
         self.assertEqual(chart.notes[1].end_tick, 576)
+        self.assertIn("timing_outlier_ratio", chart.stats["rhythm"])
+        self.assertIn("fine_grid_ratio", chart.stats["rhythm"])
+        self.assertIn("base_grid_outlier_ratio", chart.stats["rhythm"])
+        self.assertEqual(
+            len(chart.stats["rhythm"]["measure_grid_max_denominator"]),
+            chart.stats["structure"]["measure_count"])
+
+    def test_legacy_raw_note_without_timing_sigma_is_supported(self):
+        payload = serialize_raw(_raw_chart())
+        for note in payload["notes"]:
+            del note["timing_sigma_ms"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "raw.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = read_raw(path)
+
+        self.assertEqual([note.timing_sigma_ms for note in loaded.notes],
+                         [0.0, 0.0])
+
+    def test_negative_timing_sigma_is_rejected(self):
+        payload = serialize_raw(_raw_chart())
+        payload["notes"][0]["timing_sigma_ms"] = -1.0
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "raw.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "negative timing sigma"):
+                read_raw(path)
 
     def test_invalid_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,7 +135,31 @@ class RawCheckpointTest(unittest.TestCase):
         chart = build_chart(raw)
 
         self.assertEqual(len(chart.notes), 2)
-        self.assertLess(chart.notes[0].start_tick, 0)
+        self.assertEqual(chart.notes[0].start_tick, 192)
+
+    def test_v3_chart_round_trip_and_meter_events(self):
+        chart = build_chart(_raw_chart())
+        chart.global_time_sig = TimeSignature(4, 4)
+        chart.variant_measures = [
+            TimeSigVariant(1, 1, TimeSignature(3, 4))]
+        chart.barlines_tick = [0, 768, 1344, 2112]
+
+        payload = serialize_chart(chart)
+        self.assertEqual((payload["format"], payload["version"]),
+                         ("ez2cv.chart", "3.0"))
+        self.assertEqual(payload["timing"]["meter_events"], [
+            {"start_tick": 0, "numerator": 4, "denominator": 4},
+            {"start_tick": 768, "numerator": 3, "denominator": 4},
+            {"start_tick": 1344, "numerator": 4, "denominator": 4},
+        ])
+        self.assertEqual(payload["notes"][0]["id"], 0)
+        self.assertIs(payload["notes"][0]["off_grid"], False)
+        self.assertEqual(payload["meta"]["tracks"][0]["name"], "SIDE_L")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_chart(chart, root=temp_dir)
+            loaded = read_chart(path)
+        self.assertEqual(loaded, payload)
 
 
 if __name__ == "__main__":

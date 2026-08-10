@@ -15,11 +15,12 @@ CLI:
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+
+from ez2cv.io import read_chart
 
 # ───────────────────────────── styling knobs ──────────────────────────────
 
@@ -64,20 +65,20 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _ticks_per_measure(time_sig: dict, tick_res: int) -> int:
-    num, denom = time_sig["global"]
-    return num * tick_res * 4 // denom
+def _ticks_per_measure(meter: dict, tick_res: int) -> int:
+    return meter["numerator"] * tick_res * 4 // meter["denominator"]
 
 
-def _extend_barlines(barlines: list[int], tpm: int, min_tick: int, max_tick: int) -> list[int]:
+def _extend_barlines(barlines: list[int], before_tpm: int, after_tpm: int,
+                     min_tick: int, max_tick: int) -> list[int]:
     """Pad the barline grid so it covers every note (including pickup + tail)."""
     bl = list(barlines)
-    while bl[0] - tpm >= min_tick - tpm + 1:  # prepend until we cover min_tick
-        bl.insert(0, bl[0] - tpm)
+    while bl[0] - before_tpm >= min_tick - before_tpm + 1:
+        bl.insert(0, bl[0] - before_tpm)
     if bl[0] > min_tick:
-        bl.insert(0, bl[0] - tpm)
+        bl.insert(0, bl[0] - before_tpm)
     while bl[-1] < max_tick:
-        bl.append(bl[-1] + tpm)
+        bl.append(bl[-1] + after_tpm)
     return bl
 
 
@@ -85,19 +86,20 @@ def _extend_barlines(barlines: list[int], tpm: int, min_tick: int, max_tick: int
 
 
 def render(chart_path: Path, out_path: Path) -> None:
-    chart = json.loads(chart_path.read_text())
+    chart = read_chart(chart_path)
     meta = chart["meta"]
     tracks = meta.get("tracks")
     if not tracks:
         raise ValueError("chart meta has no tracks")
     lane_colors = [track["color"] for track in tracks]
     n_lanes = len(lane_colors)
-    tick_res = meta["tick_resolution"]
-    tpm = _ticks_per_measure(chart["time_signature"], tick_res)
+    timing = chart["timing"]
+    tick_res = timing["ticks_per_quarter"]
+    meters = timing["meter_events"]
 
     notes = chart["notes"]
-    segments = chart["bpm_segments"]
-    barlines = chart["barlines_tick"]
+    segments = timing["tempo_segments"]
+    barlines = timing["barlines"]
 
     # Tick range covering every note + every barline
     note_ticks = [n["start_tick"] for n in notes] + [
@@ -106,7 +108,13 @@ def render(chart_path: Path, out_path: Path) -> None:
     min_tick = min([barlines[0]] + note_ticks) if notes else barlines[0]
     max_tick = max([barlines[-1]] + note_ticks) if notes else barlines[-1]
 
-    full_bars = _extend_barlines(barlines, tpm, min_tick, max_tick)
+    first_tpm = _ticks_per_measure(meters[0], tick_res)
+    last_meter = max(
+        (meter for meter in meters if meter["start_tick"] <= barlines[-1]),
+        key=lambda meter: meter["start_tick"])
+    last_tpm = _ticks_per_measure(last_meter, tick_res)
+    full_bars = _extend_barlines(
+        barlines, first_tpm, last_tpm, min_tick, max_tick)
 
     # Build columns from consecutive groups of MEASURES_PER_COL barlines
     columns: list[tuple[int, int, int]] = []  # (start_tick, end_tick, start_measure_idx)
@@ -131,7 +139,7 @@ def render(chart_path: Path, out_path: Path) -> None:
     song = meta.get("song", "?")
     km = meta.get("key_mode", "?")
     draw.text((SIDE_PAD, 14), f"{song} — {km}", fill=TEXT, font=f_title)
-    counts = chart.get("stats", {}).get("counts", {})
+    counts = chart.get("analysis", {}).get("stats", {}).get("counts", {})
     cnt_txt = (
         f"notes={len(notes)}  taps={counts.get('tap','?')}  "
         f"longs={counts.get('longnote','?')}  "
@@ -202,8 +210,9 @@ def render(chart_path: Path, out_path: Path) -> None:
             if not (cs <= st <= ce):
                 continue
             y = tick_y(cs, st)
-            b0, b1 = seg["bpm_start"], seg["bpm_end"]
-            is_ramp = abs(b1 - b0) >= 0.1
+            is_ramp = seg["interpolation"] == "linear_time"
+            b0 = seg["bpm_start"] if is_ramp else seg["bpm"]
+            b1 = seg["bpm_end"] if is_ramp else b0
             line_color = BPM_RAMP if is_ramp else BPM_MARK
             draw.line([lane_l, y, lane_r, y], fill=line_color, width=2)
             # left arrow tick

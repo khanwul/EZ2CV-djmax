@@ -53,8 +53,8 @@ The configured skin's local template images must exist under `config/skins/djmax
 
 The inherited pipeline writes two files under `out/<song>/`:
 
-- `<song>_raw.json`: reloadable millisecond-domain detection checkpoint
-- `<song>_chart.json`: quantized chart with BPM and time-signature data
+- `<song>_raw.json`: reloadable millisecond-domain checkpoint (schema 3.0)
+- `<song>_chart.json`: `ez2cv.chart` 3.0 chart with explicit tempo and meter timelines
 
 EZ2ON-specific predicted combo statistics were removed because DJMAX scoring behavior has not been verified.
 
