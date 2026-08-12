@@ -1,26 +1,4 @@
-"""
-EZ2CV — debug visualization (READ-ONLY side channel)
-===============================================================================
-Renders what the detector "sees" so a human can sanity-check it. This module is
-strictly an OBSERVER:
-
-  * Every function draws on a COPY of the frame — never the array the detector
-    holds (video preprocessing ROIs are numpy views; drawing on the original corrupts them).
-  * It never feeds anything back into the pipeline. Pure data-in, image-out.
-  * It is for a --debug mode only; keep it OUT of production runs (drawing +
-    encoding is slow).
-
-Two views are exposed:
-
-  * STATIC per-frame PNGs (`annotate_stage1`, `plot_stage1_projection`,
-    `annotate_stage2`) + post-run summaries (`plot_raw_chart`,
-    `plot_beat_signal`). Cheap, used by the detection pipeline.
-  * OVERLAY MP4 (`render_overlay_video`) for a frame range. Shows the model's
-    per-frame decisions IN MOTION: typed Stage 2 matches, rejected Stage 1
-    runs, tracked-edge trails, trigger crossings as they fire, the in-flight
-    measure line, POW LED beats, and a running status panel. The right tool
-    for checking "did the model actually recognise this segment correctly".
-"""
+"""Read-only detector visualizations for images and overlay video."""
 
 from __future__ import annotations
 
@@ -292,32 +270,8 @@ def plot_beat_signal(signal, beats, save_path: str | Path,
     return out
 
 
-# =============================================================================
-# Overlay video — per-frame composite of every detection decision
-# =============================================================================
-#
-# Why this exists
-# ---------------
-# The static piano-roll tells you WHAT the model emitted; it does not tell you
-# WHY. To check whether the model is correctly reading the gameplay you have to
-# watch its per-frame state on top of the actual video: which Stage 1 runs were
-# confirmed and which dropped, how tracked edges follow the descending notes
-# through capture stutter, the moment a trigger crossing fires, the POW LED
-# flashing on each beat, the lone thin band that becomes a measure line.
-#
-# Design notes
-# ------------
-# * Pure observer — runs the full pipeline like DetectionPipeline.run() but reads
-#   the trackers' internal state (`tracker._lanes`, `mlt._lines`) for drawing
-#   only. The pipeline outputs are not mutated.
-# * Warm-up: pipeline runs from frame 0 through `frame_range[1]`, but only
-#   frames in [start, end) are written to the mp4. This keeps the scroll-speed
-#   estimator, beat-amplitude EMA, and longnote grace state correct at the
-#   start of the visualised range. For a late-in-song range expect the warm-up
-#   to dominate runtime.
-# * Two decodes: the Preprocessor decodes for detection, a second VideoCapture
-#   decodes the raw BGR for drawing. The second one stays closed until the
-#   first in-range frame so warm-up costs only one decode.
+# Detection warms up from frame 0; a second decode supplies unmodified frames
+# for drawing only within the requested range.
 
 _TRAIL_FADE = 0.12               # per-step color attenuation in tracked-edge trail
 _FLASH_FRAMES = 6                # how long a fired event lingers on screen
@@ -332,25 +286,7 @@ def render_overlay_video(
     progress: bool = True,
     force: bool = False,
 ) -> Path:
-    """Render a frame-range mp4 of detection's per-frame decisions.
-
-    Parameters
-    ----------
-    cal
-        A resolved RunConfig (see `load_config`).
-    save_path
-        Output mp4 path. Parent directories are created if missing.
-    frame_range
-        `(start, end)` frame indices, end-exclusive.
-    trail_length
-        How many past positions of a tracked edge are drawn as fading dots.
-    progress
-        If True, show an in-place progress bar (warmup / render phases).
-
-    Returns
-    -------
-    The save_path as a Path, after the writer has been released.
-    """
+    """Render detector decisions for an end-exclusive frame range."""
     # imports kept local so the static viz functions stay usable without the
     # pipeline imports being satisfied
     from ez2cv.video import Preprocessor

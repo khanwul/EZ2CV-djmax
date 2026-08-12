@@ -53,8 +53,8 @@ Or run one config explicitly:
 uv run ez2cv "config/<song>.toml"
 ```
 
-`--force` permits an FPS or panel-alignment mismatch and records the fallback
-in the raw checkpoint. It should not be used for ordinary extraction.
+`--force` accepts an FPS or alignment mismatch and records the fallback in the
+raw checkpoint.
 
 Rebuild a chart without decoding the video again:
 

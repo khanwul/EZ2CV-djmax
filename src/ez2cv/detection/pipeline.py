@@ -1,35 +1,7 @@
-"""One-pass video detection orchestrator.
+"""One-pass video detector producing a millisecond-domain ``RawChart``.
 
-Runs the detector over a video in a single decode. The Preprocessor feeds
-each frame down three paths at once:
-
-  note path     :  Stage 1 (projection)  ->  Stage 2 (template match)
-                   ->  NoteTracker  ->  LongnoteStateMachine
-  beat path     :  BeatDetector (POW LED)
-  bar-line path :  MeasureLineDetector  ->  MeasureLineTracker
-
-The product is a RawChart — raw, MILLISECOND-based notes, beats and bar
-lines held in memory.
-
-The bar-line path reuses the note path's Stage 1 output (its per-lane
-`projection` arrays) for free, so adding it costs no extra decode and almost no
-extra compute. It exists because the POW LED gives only BEAT phase, while a
-measure line gives MEASURE phase — chart conversion needs both.
-
-Why detection stops at milliseconds
-------------------------------------
-Detection deliberately knows nothing about BPM, ticks, or the musical grid.
-Keeping the expensive video pass grid-agnostic means it runs once and
-every later experiment — a different BPM guess, a different snapping strategy —
-reuses the same raw result instead of re-decoding 100k+ frames.
-
-Usage
------
-    result = DetectionPipeline(load_config("config/song.toml")).run()
-    print(result.summary())
-    # result.notes    : list[RawNote]      (taps + longnotes, ms-based)
-    # result.beats    : list[BeatEvent]    (POW LED beats, ms-based)
-    # result.barlines : list[BarlineEvent] (measure boundaries, ms-based)
+Each frame feeds the note, beat, and barline paths. Barline detection reuses
+the note path's Stage 1 projections.
 """
 
 from __future__ import annotations

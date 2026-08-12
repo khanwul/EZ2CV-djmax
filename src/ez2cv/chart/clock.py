@@ -1,36 +1,12 @@
-"""
-EZ2CV — chart conversion / tick_clock : BPMSegment + TickClock (ms ↔ tick)
-===============================================================================
-The chart world is tick-based; the raw world is ms-based. Everything that needs
-to translate between the two goes through ``TickClock``. There is exactly one
-clock per song, built from the anchors selected by timeline inference.
+"""Canonical BPM-segment millisecond ↔ tick conversion.
 
-Why a piecewise-LINEAR model
-----------------------------
-Tempo can ramp gradually (e.g. a 4-bar accelerando). A constant-BPM model would
-approximate the ramp by a stair-step, which leaks small ms→tick errors that
-accumulate and push later notes off-grid. A linear BPM segment expresses the
-ramp exactly in a closed form (the integral of a linear ticks-per-ms function
-is a quadratic in time). Constant BPM is just the slope-zero case, so this
-model is a strict superset.
+Linear BPM integrates to a quadratic tick curve:
 
-Math (single segment of duration T_ms)
---------------------------------------
     ticks_per_ms(τ) = R · (b0 + (b1 − b0)·τ/T) / 60_000
     ticks(dt) = ∫_0^dt  ticks_per_ms(τ) dτ
               = R/60_000 · ( b0·dt + (b1−b0)·dt² / (2T) )
 
-The constant case collapses to ``R · bpm · dt / 60_000``. We tag a segment with
-|Δbpm| < 0.1 BPM as constant (``is_constant``) to dodge near-singular quadratic
-inversion in ``tick_to_ms``.
-
-Tick origin convention
-----------------------
-Tick 0 corresponds to ``measure_zero_ms`` (the moment the first measure line
-crosses the judgment line). Pre-anacrusis notes therefore live at NEGATIVE tick.
-Construction from selected anchors keeps every retained timing landmark on an
-exact tick unless a configured BPM bound is applied within its explicit timing
-tolerance. ``from_drafts`` remains for callers that already own a BPM model.
+Tick 0 is the first measure line; pickup notes may have negative ticks.
 """
 
 from __future__ import annotations
@@ -40,10 +16,6 @@ from typing import Iterable
 
 import numpy as np
 
-
-# =============================================================================
-# BPMSegment
-# =============================================================================
 
 @dataclass
 class BPMSegment:
