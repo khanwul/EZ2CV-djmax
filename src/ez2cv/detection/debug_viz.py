@@ -447,6 +447,7 @@ def render_overlay_video(
 
         vis = _draw_overlay_frame(
             raw, cal, pf, s1r, s2r,
+            alignment_offset=pre.alignment_offset,
             tracker_lanes=tracker._lanes,
             tracked_barlines=mlt._lines,
             scroll_speed=tracker.speed.speed,
@@ -484,6 +485,7 @@ def _draw_overlay_frame(
     s1_results: list[Stage1Result],
     s2_results: list[Stage2Result],
     *,
+    alignment_offset: tuple[int, int],
     tracker_lanes: dict,
     tracked_barlines: list,
     scroll_speed: float,
@@ -496,17 +498,19 @@ def _draw_overlay_frame(
 ) -> np.ndarray:
     """Compose a single overlay frame. Pure data-in, image-out."""
     vis = raw_bgr.copy()
-    x_lo = cal.lanes[0].x_range[0]
-    x_hi = cal.lanes[-1].x_range[1]
+    dx, dy = alignment_offset
+    x_lo = cal.lanes[0].x_range[0] + dx
+    x_hi = cal.lanes[-1].x_range[1] + dx
 
     # --- reference geometry ---------------------------------------------------
     for ln in cal.lanes:
-        cv2.rectangle(vis, (ln.x_range[0], cal.playfield_top),
-                      (ln.x_range[1], cal.playfield_bottom), _C_LANE, 1)
-    cv2.line(vis, (x_lo - 30, cal.line_y),
-             (x_hi + 30, cal.line_y), _C_JUDGE, 1)
-    cv2.line(vis, (x_lo - 30, cal.trigger_template_y_top),
-             (x_hi + 30, cal.trigger_template_y_top), _C_TRIGGER, 1)
+        cv2.rectangle(vis, (ln.x_range[0] + dx, cal.playfield_top + dy),
+                      (ln.x_range[1] + dx, cal.playfield_bottom + dy),
+                      _C_LANE, 1)
+    cv2.line(vis, (x_lo - 30, cal.line_y + dy),
+             (x_hi + 30, cal.line_y + dy), _C_JUDGE, 1)
+    cv2.line(vis, (x_lo - 30, cal.trigger_template_y_top + dy),
+             (x_hi + 30, cal.trigger_template_y_top + dy), _C_TRIGGER, 1)
 
     # --- rejected Stage 1 runs (faint) ---------------------------------------
     confirmed_runs = {id(m.source_run) for r in s2_results for m in r.matches}
@@ -515,22 +519,22 @@ def _draw_overlay_frame(
         for run in res.runs:
             if id(run) in confirmed_runs:
                 continue
-            fy0 = run.y_start + res.roi_y_origin
-            fy1 = run.y_end + res.roi_y_origin
-            cv2.rectangle(vis, (ln.x_range[0] + 2, fy0),
-                          (ln.x_range[1] - 2, fy1), _C_REJECT, 1)
+            fy0 = run.y_start + res.roi_y_origin + dy
+            fy1 = run.y_end + res.roi_y_origin + dy
+            cv2.rectangle(vis, (ln.x_range[0] + dx + 2, fy0),
+                          (ln.x_range[1] + dx - 2, fy1), _C_REJECT, 1)
 
     # --- Stage 2 confirmed matches -------------------------------------------
     for res in s2_results:
         ln = cal.lanes[res.lane_index]
         for m in res.matches:
             color = _C_MATCH.get(m.type, (255, 255, 255))
-            y0 = m.y_top
-            y1 = m.y_top + cal.note_height
-            cv2.rectangle(vis, (ln.x_range[0] + 1, y0),
-                          (ln.x_range[1] - 1, y1), color, 2)
+            y0 = m.y_top + dy
+            y1 = y0 + cal.note_height
+            cv2.rectangle(vis, (ln.x_range[0] + dx + 1, y0),
+                          (ln.x_range[1] + dx - 1, y1), color, 2)
             cv2.putText(vis, f"{m.type[:2]} {m.score:.2f}",
-                        (ln.x_range[0] + 2, max(y0 - 3, 10)),
+                        (ln.x_range[0] + dx + 2, max(y0 - 3, 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.36, color, 1, cv2.LINE_AA)
 
     # --- tracked-edge trails -------------------------------------------------
@@ -540,7 +544,7 @@ def _draw_overlay_frame(
     for edges in tracker_lanes.values():
         for e in edges:
             ln = cal.lanes[e.lane]
-            cx = (ln.x_range[0] + ln.x_range[1]) // 2
+            cx = (ln.x_range[0] + ln.x_range[1]) // 2 + dx
             base = _C_MATCH.get(e.type, (255, 255, 255))
             trail = e.trajectory[-trail_length:]
             for i, (_, y, _) in enumerate(trail):
@@ -548,9 +552,9 @@ def _draw_overlay_frame(
                 fade = max(0.25, 1.0 - age * _TRAIL_FADE)
                 color = tuple(int(c * fade) for c in base)
                 radius = max(1, 3 - age // 3)
-                cv2.circle(vis, (cx, int(y) + cal.note_height // 2),
+                cv2.circle(vis, (cx, int(y) + dy + cal.note_height // 2),
                            radius, color, -1, cv2.LINE_AA)
-            last_y = int(e.trajectory[-1][1])
+            last_y = int(e.trajectory[-1][1]) + dy
             cv2.putText(vis, f"#{e.id}",
                         (cx + 6, last_y + cal.note_height // 2 + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.32,
@@ -558,7 +562,7 @@ def _draw_overlay_frame(
 
     # --- in-flight measure lines ---------------------------------------------
     for line in tracked_barlines:
-        y = int(line.last_y)
+        y = int(line.last_y) + dy
         cv2.line(vis, (x_lo - 30, y), (x_hi + 30, y),
                  _C_BARLINE, 1, cv2.LINE_AA)
         cv2.putText(vis, f"bar #{line.id}", (x_hi + 35, y + 4),
@@ -566,6 +570,7 @@ def _draw_overlay_frame(
 
     # --- POW LED region + beat indicator -------------------------------------
     bx1, by1, bx2, by2 = cal.beat_roi
+    bx1, by1, bx2, by2 = bx1 + dx, by1 + dy, bx2 + dx, by2 + dy
     beat_fresh = any(pf.frame_index - f < 3 for f, _ in recent_beats)
     led_color = _C_LED_ON if beat_fresh else _C_LED_OFF
     cv2.rectangle(vis, (bx1, by1), (bx2, by2), led_color, 2)
@@ -581,16 +586,16 @@ def _draw_overlay_frame(
     # cross_frame stored in the event still carries the true sub-frame moment.
     for stack_i, (f, ev) in enumerate(recent_triggers):
         ln = cal.lanes[ev.lane]
-        cx = (ln.x_range[0] + ln.x_range[1]) // 2
+        cx = (ln.x_range[0] + ln.x_range[1]) // 2 + dx
         color = _C_EXTRAP if ev.extrapolated else _C_MATCH.get(ev.type, (255,255,255))
         tag = ev.type + ("*" if ev.extrapolated else "")
         cv2.putText(vis, f"!{tag}",
-                    (cx - 28, cal.line_y + 26 + stack_i * 14),
+                    (cx - 28, cal.line_y + dy + 26 + stack_i * 14),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
 
     for f, ev in recent_barlines:
         cv2.putText(vis, f"BARLINE @ {ev.ms:.0f}ms",
-                    (x_hi + 35, cal.line_y - 12),
+                    (x_hi + 35, cal.line_y + dy - 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, _C_BARLINE, 2, cv2.LINE_AA)
 
     # --- status panel (top-left) ---------------------------------------------

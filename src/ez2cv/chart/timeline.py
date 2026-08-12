@@ -35,6 +35,7 @@ TEMPO_RAMP_COST = 3.0
 NOTE_GRID_COST = 2.0
 SUBBEAT_GRID_GAIN = 0.4
 TEMPO_BPM_QUANTUM = 0.25
+BOUNDED_CLOCK_RESIDUAL_FRAMES = 3.0
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,19 @@ def _fit_tempo_clock(raw: RawChart, ms: np.ndarray,
         span.bound_adjustment_ms for span in spans
         if span.bound_adjustment_ms
     ]
+    return _validate_bounded_clock(raw, clock, ms, ticks)
+
+
+def _validate_bounded_clock(raw: RawChart, clock: TickClock,
+                            ms: np.ndarray, ticks: np.ndarray) -> TickClock:
+    """Reject bounded spans whose small local errors accumulate globally."""
+    if clock.bpm_bound_adjustments:
+        residual = max(abs(observed - clock.tick_to_ms(tick))
+                       for observed, tick in zip(ms, ticks, strict=True))
+        if residual > BOUNDED_CLOCK_RESIDUAL_FRAMES * 1000.0 / raw.fps:
+            raise ValueError(
+                "no in-range tempo model fits the beat observations: "
+                f"bounded clock residual is {residual:.3f} ms")
     return clock
 
 
@@ -198,8 +212,11 @@ def _normalized_tempo_clock(raw: RawChart, clock: TickClock) -> TickClock:
         segment.start_tick, segment.end_tick,
         normalized(segment.bpm_start), normalized(segment.bpm_end),
     ) for segment in clock.segments]
-    return TickClock(segments, tick_zero_ms=clock.tick_zero_ms,
-                     tick_resolution=clock.tick_resolution)
+    normalized = TickClock(
+        segments, tick_zero_ms=clock.tick_zero_ms,
+        tick_resolution=clock.tick_resolution)
+    normalized.bpm_bound_adjustments = list(clock.bpm_bound_adjustments)
+    return normalized
 
 
 def _expand_symmetric_subbeat_steps(raw: RawChart,
@@ -443,18 +460,30 @@ def infer_timeline(raw: RawChart) -> Timeline:
             int(round(observed_ticks[0])), int(round(observed_ticks[-1])), bpm, bpm)],
             tick_zero_ms=tick_zero_ms, tick_resolution=raw.tick_resolution)
     else:
-        clocks = [
-            _expand_symmetric_subbeat_steps(
-                raw, _fit_tempo_clock(
-                    raw, observed_ms, observed_ticks, change_cost))
-            for change_cost in TEMPO_CHANGE_COSTS
-        ]
+        clocks = []
+        for change_cost in TEMPO_CHANGE_COSTS:
+            try:
+                clocks.append(_expand_symmetric_subbeat_steps(
+                    raw, _fit_tempo_clock(
+                        raw, observed_ms, observed_ticks, change_cost)))
+            except ValueError:
+                pass
+        if not clocks:
+            raise ValueError("no in-range tempo model fits the beat observations")
         clock = min(clocks, key=lambda candidate:
                     _tempo_clock_score(raw, candidate))
-        clock = _phase_fit_clock(clock, reconstruction, bar_ticks)
+        clock = _validate_bounded_clock(
+            raw, _phase_fit_clock(clock, reconstruction, bar_ticks),
+            observed_ms, observed_ticks)
         normalized = _phase_fit_clock(
             _normalized_tempo_clock(raw, clock), reconstruction, bar_ticks)
-        clock = min((clock, normalized), key=lambda candidate:
+        candidates = [clock]
+        try:
+            candidates.append(_validate_bounded_clock(
+                raw, normalized, observed_ms, observed_ticks))
+        except ValueError:
+            pass
+        clock = min(candidates, key=lambda candidate:
                     _tempo_clock_score(raw, candidate))
     barline_ticks = [int(tick) for tick in bar_ticks]
     return Timeline(

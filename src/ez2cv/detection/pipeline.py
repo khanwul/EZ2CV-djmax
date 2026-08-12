@@ -65,6 +65,15 @@ def _frame_to_ms(frame: float, timestamps: list[float], fps: float) -> float:
         timestamps[right] - timestamps[left])
 
 
+def _timeline_duration_ms(timestamps: list[float], fps: float) -> float:
+    """Duration through the final decoded frame on the presentation timeline."""
+    if not timestamps:
+        return 0.0
+    final_interval = (timestamps[-1] - timestamps[-2]
+                      if len(timestamps) > 1 else 1000.0 / fps)
+    return timestamps[-1] + final_interval
+
+
 def _print_progress(done: int, total: int, *, width: int = 40,
                     label: str = "") -> None:
     """Render a single in-place progress bar (overwrites itself via ``\\r``)."""
@@ -111,7 +120,12 @@ class RawChart:
     barlines: list[BarlineEvent]    # measure boundaries, sorted by frame
     frame_count: int
     orphan_tails: int               # tails with no matching head (dropped)
+    duration_ms: float | None = None
     provenance: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.duration_ms is None:
+            self.duration_ms = self.frame_count / self.fps * 1000.0
 
     @property
     def key_count(self) -> int:
@@ -125,10 +139,6 @@ class RawChart:
     @property
     def normal_lane_count(self) -> int:
         return sum(track.role == "normal" for track in self.tracks)
-
-    @property
-    def duration_ms(self) -> float:
-        return self.frame_count / self.fps * 1000.0
 
     @property
     def taps(self) -> list[RawNote]:
@@ -283,6 +293,7 @@ class DetectionPipeline:
             barlines=barline_events,
             frame_count=frame_count,
             orphan_tails=lnsm.orphan_tails,
+            duration_ms=_timeline_duration_ms(timestamps, self.cal.fps),
             provenance={**self.cal.provenance,
                         "timestamp_source": pre.timestamp_source,
                         "alignment_offset_px": list(pre.alignment_offset)},

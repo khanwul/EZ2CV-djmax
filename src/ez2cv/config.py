@@ -260,9 +260,12 @@ def _sha256(path: Path) -> str:
 
 
 def _git_commit(path: Path) -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"],
-        capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False)
+    except OSError:
+        return None
     return result.stdout.strip() if result.returncode == 0 else None
 
 

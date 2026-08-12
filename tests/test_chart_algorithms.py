@@ -265,6 +265,15 @@ class ChartAlgorithmTest(unittest.TestCase):
             raw, noisy, np.arange(len(noisy), dtype=float) * 192)
         self.assertEqual(len(steady.segments), 1)
 
+    def test_bpm_bounds_reject_accumulated_clock_drift(self):
+        raw = SimpleNamespace(fps=60.0, tick_resolution=192,
+                              min_bpm=100.0, max_bpm=200.0)
+        ticks = np.arange(101, dtype=float) * 192
+        beat_ms = ticks / 192 * 60_000.0 / 210.0
+
+        with self.assertRaisesRegex(ValueError, "bounded clock residual"):
+            _fit_tempo_clock(raw, beat_ms, ticks)
+
     def test_beat_tempo_model_can_select_one_linear_ramp(self):
         source = TickClock(
             [BPMSegment(0, 3072, 120.0, 180.0)],

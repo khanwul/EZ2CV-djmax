@@ -156,6 +156,9 @@ def read_raw(path: str | Path) -> RawChart:
             max_bpm=float(meta["max_bpm"]),
             frame_count=int(meta["frame_count"]),
             orphan_tails=int(meta["orphan_tails"]),
+            duration_ms=float(meta.get(
+                "duration_ms",
+                int(meta["frame_count"]) / float(meta["fps"]) * 1000.0)),
             provenance=dict(meta.get("provenance", {})),
             notes=[RawNote(
                 lane=int(note["lane"]),
@@ -190,7 +193,8 @@ def read_raw(path: str | Path) -> RawChart:
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid raw chart {source}: {exc}") from exc
 
-    numeric = [raw.fps, raw.note_speed, raw.min_bpm, raw.max_bpm]
+    numeric = [raw.fps, raw.note_speed, raw.min_bpm, raw.max_bpm,
+               raw.duration_ms]
     numeric.extend(note.trigger_ms for note in raw.notes)
     numeric.extend(note.end_ms for note in raw.notes if note.end_ms is not None)
     numeric.extend(note.start_sigma_ms for note in raw.notes)
@@ -200,7 +204,8 @@ def read_raw(path: str | Path) -> RawChart:
     numeric.extend(barline.ms for barline in raw.barlines)
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError(f"invalid raw chart {source}: non-finite number")
-    if raw.fps <= 0 or raw.tick_resolution != 192 or not raw.tracks:
+    if (raw.fps <= 0 or raw.duration_ms < 0
+            or raw.tick_resolution != 192 or not raw.tracks):
         raise ValueError(f"invalid raw chart {source}: invalid timing or lanes")
     if not isinstance(raw.game, str) or not raw.game.strip():
         raise ValueError(f"invalid raw chart {source}: invalid game")

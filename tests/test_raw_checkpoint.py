@@ -11,6 +11,7 @@ from ez2cv.chart import build_chart
 from ez2cv.chart.clock import BPMSegment, TickClock
 from ez2cv.chart.meter import TimeSignature, TimeSigVariant
 from ez2cv.cli import main, run
+from ez2cv.config import _git_commit
 from ez2cv.detection import RawChart, TrackMetadata
 from ez2cv.detection.barline import BarlineEvent
 from ez2cv.detection.beat import BeatEvent
@@ -58,6 +59,10 @@ def _raw_chart() -> RawChart:
 
 
 class RawCheckpointTest(unittest.TestCase):
+    def test_missing_git_executable_does_not_block_config(self):
+        with patch("ez2cv.config.subprocess.run", side_effect=FileNotFoundError):
+            self.assertIsNone(_git_commit(Path.cwd()))
+
     def test_no_input_runs_every_song_config(self):
         with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir):
             config = Path("config")

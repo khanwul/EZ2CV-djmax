@@ -44,6 +44,7 @@ from ez2cv.config import CHANNEL_EXTRACTORS, RunConfig
 
 
 ALIGNMENT_DEADBAND_PX = 2
+ALIGNMENT_SEARCH_SECONDS = 2.0
 
 
 # =============================================================================
@@ -194,13 +195,38 @@ class Preprocessor:
     def __iter__(self) -> Iterator[PreprocessedFrame]:
         """Open a fresh capture and yield one PreprocessedFrame per frame."""
         cap = self._open()
-        self._verify_stream(cap)
         cal = self.cal
         t, b = cal.playfield_top, cal.playfield_bottom
         base_x0 = self._crop_x0
         bx1, by1, bx2, by2 = cal.beat_roi
         beat_extract = CHANNEL_EXTRACTORS[cal.beat_channel]
         try:
+            self._verify_stream(cap)
+            self.timestamp_source = "container_pts"
+            self.alignment_offset = (0, 0)
+            if (cal.alignment_band_y is not None
+                    and cal.alignment_max_shift > 0):
+                error: RuntimeError | None = RuntimeError(
+                    "calibrated judgment band was not found")
+                for _ in range(max(1, round(
+                        cal.fps * ALIGNMENT_SEARCH_SECONDS))):
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    try:
+                        self.alignment_offset = _alignment_offset(frame, cal)
+                        error = None
+                        break
+                    except RuntimeError as exc:
+                        error = exc
+                if error is not None:
+                    if not self.force:
+                        raise error
+                    print(f"[preprocessor] WARNING: {error} (--force)")
+                # The probe never changes the main decode's frame indices/PTS.
+                cap.release()
+                cap = self._open()
+
             idx = 0
             pts_origin: float | None = None
             previous_ms = -1.0
@@ -209,13 +235,6 @@ class Preprocessor:
                 if not ok:
                     break
 
-                if idx == 0:
-                    try:
-                        self.alignment_offset = _alignment_offset(frame, cal)
-                    except RuntimeError as exc:
-                        if not self.force:
-                            raise
-                        print(f"[preprocessor] WARNING: {exc} (--force)")
                 align_x, align_y = self.alignment_offset
 
                 pts = float(cap.get(cv2.CAP_PROP_POS_MSEC))

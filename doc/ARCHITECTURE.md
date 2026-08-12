@@ -103,9 +103,10 @@ flowchart LR
 
 Important invariants:
 
-- Decode-time resolution must exactly match the geometry profile. The first
-  frame locates the calibrated cyan judgment band and normalizes translation
-  of every lane and beat ROI while retaining the profile's logical coordinates.
+- Decode-time resolution must exactly match the geometry profile. The initial
+  two seconds are searched for the calibrated cyan judgment band, then the
+  main decode restarts at frame zero and normalizes translation of every lane
+  and beat ROI while retaining the profile's logical coordinates.
   Only translation within the configured limit is accepted; scale, rotation,
   a missing band, and FPS mismatch fail unless `--force` explicitly accepts
   the uncorrected calibration.
@@ -116,7 +117,8 @@ Important invariants:
 - Beat events report the rise edge of the POW LED flash.
 - Fractional frame crossings are mapped through decoded container PTS; a
   provenance-marked configured-FPS fallback is used only when the backend does
-  not expose a monotonic presentation timeline.
+  not expose a monotonic presentation timeline. Raw duration is derived from
+  the same decoded PTS timeline.
 - Tracking interpolates bracketed judgment-line crossings. Tap and longnote-tail
   near misses use a regression over the latest local trajectory, with global
   scroll speed as a gate and fallback. Held longnote heads retain global-speed
@@ -156,6 +158,8 @@ so a checkpoint identifies the exact detector inputs without embedding them.
    selects spans using frame-normalized timing residual plus explicit
    tempo-change and ramp complexity costs. Two bounded change-cost candidates
    are compared by base-grid outlier count; raw notes remain auxiliary evidence.
+   A bounded candidate is rejected when its completed canonical clock exceeds
+   the global beat-residual tolerance, preventing local clamps from accumulating.
    The selected clock is phase-fitted to barlines, then a bounded 0.25-BPM
    normalized alternative is kept only when that auxiliary score improves.
 5. Test a two-beat constant span for a symmetric low-half/high/low-half tempo

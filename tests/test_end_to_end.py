@@ -35,7 +35,8 @@ class SyntheticEndToEndTest(unittest.TestCase):
     def test_translated_panel_is_normalized(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config, expected = make_fixture(
-                Path(temp_dir) / "translated.avi", alignment_offset=(5, -4))
+                Path(temp_dir) / "translated.avi", alignment_offset=(5, -4),
+                alignment_visible_from=3)
             raw = DetectionPipeline(config).run(progress=False)
             chart = serialize_chart(build_chart(raw))
 

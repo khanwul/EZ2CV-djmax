@@ -40,7 +40,8 @@ def _blit(frame: np.ndarray, sprite: np.ndarray, x: int, y: int) -> None:
         frame[y:y + h, x:x + w] = sprite
 
 
-def make_fixture(path: Path, alignment_offset=(0, 0)) -> tuple[RunConfig, dict]:
+def make_fixture(path: Path, alignment_offset=(0, 0),
+                 alignment_visible_from=0) -> tuple[RunConfig, dict]:
     align_x, align_y = alignment_offset
     templates = {kind: _sprite(kind) for kind in ("note", "lnhead", "lntail")}
     writer = cv2.VideoWriter(
@@ -53,8 +54,10 @@ def make_fixture(path: Path, alignment_offset=(0, 0)) -> tuple[RunConfig, dict]:
     try:
         for frame_index in range(285):
             frame = np.zeros((160, 200, 3), dtype=np.uint8)
-            frame[140 + align_y:145 + align_y,
-                  LANES[0][0] + align_x:LANES[-1][1] + align_x + 1, 0] = 220
+            if frame_index >= alignment_visible_from:
+                frame[140 + align_y:145 + align_y,
+                      LANES[0][0] + align_x:
+                      LANES[-1][1] + align_x + 1, 0] = 220
             if frame_index - 1 in BEAT_FRAMES:
                 frame[10 + align_y:20 + align_y,
                       10 + align_x:20 + align_x] = 255
