@@ -7,9 +7,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from ez2cv.chart.barline import ReconstructResult, reconstruct_barlines
-from ez2cv.chart.clock import TickClock
+from ez2cv.chart.clock import BPMSegment, TickClock
 from ez2cv.chart.meter import TimeSignature, TimeSigVariant
-from ez2cv.chart.quantize import ALLOWED_DENOMS, DEFAULT_MAX_TOLERANCE_TICK
+from ez2cv.chart.quantize import (ALLOWED_DENOMS, DEFAULT_ALPHA,
+                                  DEFAULT_TRIPLET_CONTEXT_PENALTY,
+                                  TRIPLET_DENOMS, grid_distances)
 from ez2cv.detection import RawChart
 from ez2cv.detection.barline import BarlineEvent
 from ez2cv.detection.beat import BeatEvent
@@ -23,228 +25,264 @@ class Timeline:
     global_time_sig: TimeSignature
     variants: list[TimeSigVariant]
     measure_meters: list[int]
+    inserted_beats: int = 0
+    deleted_beats: int = 0
 
 
-TEMPO_RUN_REL_TOL = 0.013
-SUBMEASURE_MIN_REL_CHANGE = 0.05
-SUBMEASURE_MAX_RESIDUAL_RATIO = 0.10
+TEMPO_CHANGE_COST = 4.0
+TEMPO_CHANGE_COSTS = (2.0, 4.0)
+TEMPO_RAMP_COST = 3.0
+NOTE_GRID_COST = 2.0
+SUBBEAT_GRID_GAIN = 0.4
+TEMPO_BPM_QUANTUM = 0.25
 
 
-def _tempo_runs(bar_ms: np.ndarray, meters: list[int], fps: float
-                ) -> list[tuple[int, int]]:
-    """Split measures only at clear changes in their measured beat period."""
-    period = np.diff(bar_ms) / np.asarray(meters, dtype=float)
-    if len(period) == 0:
-        return []
+@dataclass(frozen=True)
+class _TempoSpan:
+    start: int
+    end: int
+    bpm_start: float
+    bpm_end: float
+    cost: float
+    bound_adjustment_ms: float = 0.0
 
-    runs: list[tuple[int, int]] = []
-    frame_floor = 500.0 / (fps * np.maximum(1, meters))
-    start = 0
-    run_sum = float(period[0])
-    for i in range(1, len(period)):
-        mean = run_sum / (i - start)
-        threshold = max(TEMPO_RUN_REL_TOL * mean, frame_floor[i])
-        if abs(period[i] - mean) > threshold:
-            # An inferred line can move one isolated measure by a frame while
-            # the following measure returns to the plateau. Absorb that pair,
-            # but preserve a large one-measure tempo step.
-            if (i + 1 < len(period)
-                    and abs(period[i] - mean) <= 2.0 * threshold
-                    and abs(period[i + 1] - mean)
-                    <= max(TEMPO_RUN_REL_TOL * mean, frame_floor[i + 1])):
-                run_sum += float(period[i])
+
+def _tempo_observations(beat_ms: np.ndarray, result: ReconstructResult,
+                        tick_resolution: int) -> tuple[np.ndarray, np.ndarray]:
+    """Align every active beat to measured barlines without changing order."""
+    ordinals = np.asarray(result.beat_indices, dtype=int)
+    active = np.arange(ordinals[0], ordinals[-1] + 1)
+    bars = np.asarray([line.ms for line in result.barlines], dtype=float)
+    corrections = bars - beat_ms[ordinals]
+    corrected = beat_ms[active] + np.interp(active, ordinals, corrections)
+    if np.any(np.diff(corrected) <= 0):
+        raise ValueError("corrected beat observations must be monotonic")
+    ticks = (active - ordinals[0]) * tick_resolution
+    return corrected, ticks.astype(float)
+
+
+def _fit_tempo_span(raw: RawChart, ms: np.ndarray, ticks: np.ndarray,
+                    start: int, end: int) -> _TempoSpan | None:
+    duration = float(ms[end] - ms[start])
+    tick_span = float(ticks[end] - ticks[start])
+    if duration <= 0 or tick_span <= 0:
+        return None
+    sigma = 1000.0 / raw.fps
+    inferred_bpm = tick_span * 60_000.0 / (
+        raw.tick_resolution * duration)
+    average_bpm = float(np.clip(inferred_bpm, raw.min_bpm, raw.max_bpm))
+    bounded_duration = tick_span * 60_000.0 / (
+        raw.tick_resolution * average_bpm)
+    bound_adjustment = abs(bounded_duration - duration)
+    if bound_adjustment > 2000.0 / raw.fps:
+        return None
+    average_rate = raw.tick_resolution * average_bpm / 60_000.0
+
+    local_ms = ms[start:end + 1]
+    local_ticks = ticks[start:end + 1]
+    elapsed = local_ms - ms[start]
+    step_prediction = ticks[start] + average_rate * elapsed
+    step_residual_ms = (local_ticks - step_prediction) / average_rate
+    best = _TempoSpan(
+        start, end, average_bpm, average_bpm,
+        float(np.sum((step_residual_ms / sigma) ** 2)),
+        bound_adjustment,
+    )
+
+    if end - start < 3 or bound_adjustment:
+        return best
+    curvature = elapsed * elapsed - duration * elapsed
+    denominator = float(np.dot(curvature, curvature))
+    if denominator <= 0:
+        return best
+    tick_residual = local_ticks - step_prediction
+    coefficient = float(np.dot(curvature, tick_residual) / denominator)
+    bpm_start = ((average_rate - coefficient * duration)
+                 * 60_000.0 / raw.tick_resolution)
+    bpm_end = ((average_rate + coefficient * duration)
+               * 60_000.0 / raw.tick_resolution)
+    if not (raw.min_bpm <= bpm_start <= raw.max_bpm
+            and raw.min_bpm <= bpm_end <= raw.max_bpm):
+        return best
+    ramp_prediction = step_prediction + coefficient * curvature
+    ramp_residual_ms = (local_ticks - ramp_prediction) / average_rate
+    ramp_cost = float(np.sum((ramp_residual_ms / sigma) ** 2)) + TEMPO_RAMP_COST
+    if ramp_cost < best.cost:
+        return _TempoSpan(start, end, bpm_start, bpm_end, ramp_cost)
+    return best
+
+
+def _fit_tempo_clock(raw: RawChart, ms: np.ndarray,
+                     ticks: np.ndarray,
+                     change_cost: float = TEMPO_CHANGE_COST) -> TickClock:
+    """Select step/ramp beat spans under one residual + complexity cost."""
+    count = len(ms)
+    costs = np.full(count, np.inf)
+    previous = np.full(count, -1, dtype=int)
+    chosen: list[_TempoSpan | None] = [None] * count
+    costs[0] = 0.0
+    for end in range(1, count):
+        for start in range(end):
+            span = _fit_tempo_span(raw, ms, ticks, start, end)
+            if span is None or not np.isfinite(costs[start]):
                 continue
-            runs.append((start, i))
-            start = i
-            run_sum = float(period[i])
-        else:
-            run_sum += float(period[i])
-    runs.append((start, len(period)))
-    return runs
+            cost = costs[start] + span.cost
+            if start:
+                cost += change_cost
+            if cost < costs[end]:
+                costs[end] = cost
+                previous[end] = start
+                chosen[end] = span
+    if chosen[-1] is None:
+        raise ValueError("no in-range tempo model fits the beat observations")
+
+    spans: list[_TempoSpan] = []
+    end = count - 1
+    while end:
+        span = chosen[end]
+        assert span is not None
+        spans.append(span)
+        end = previous[end]
+    spans.reverse()
+    segments = [BPMSegment(
+        int(round(ticks[span.start])), int(round(ticks[span.end])),
+        span.bpm_start, span.bpm_end,
+    ) for span in spans]
+    clock = TickClock(segments, tick_zero_ms=float(ms[0]),
+                      tick_resolution=raw.tick_resolution)
+    phase = float(np.mean([
+        observed - clock.tick_to_ms(tick)
+        for observed, tick in zip(ms, ticks, strict=True)
+    ]))
+    clock = TickClock(segments, tick_zero_ms=float(ms[0]) + phase,
+                      tick_resolution=raw.tick_resolution)
+    clock.bpm_bound_adjustments = [
+        span.bound_adjustment_ms for span in spans
+        if span.bound_adjustment_ms
+    ]
+    return clock
 
 
-def _grid_score(note_ms: np.ndarray, anchor_ms: np.ndarray,
-                anchor_ticks: np.ndarray, tick_resolution: int
-                ) -> tuple[int, float]:
-    """How naturally notes land on supported grids under one clock model."""
-    if len(note_ms) == 0:
-        return 0, 0.0
-    ticks = np.interp(note_ms, anchor_ms, anchor_ticks)
-    distances = np.full(len(ticks), np.inf)
-    for denominator in ALLOWED_DENOMS:
-        step = tick_resolution * 4.0 / denominator
-        distances = np.minimum(distances,
-                               np.abs(ticks - np.rint(ticks / step) * step))
-    off_grid = int(np.count_nonzero(
-        distances > DEFAULT_MAX_TOLERANCE_TICK))
-    return off_grid, float(np.sum(np.minimum(distances, 24.0) ** 2))
-
-
-def _select_tempo_anchors(raw: RawChart, bar_ms: np.ndarray,
-                          bar_ticks: np.ndarray,
-                          meters: list[int]) -> tuple[np.ndarray, np.ndarray]:
-    """Denoise steady runs, retaining every bar in genuinely variable runs.
-
-    Barline timing is frame-quantised.  A single line through a steady run
-    removes that jitter; a changing run needs its intermediate observations.
-    Raw note heads decide between those two measured models locally.
-    """
-    note_ms = np.array([n.trigger_ms for n in raw.notes], dtype=float)
-    runs = _tempo_runs(bar_ms, meters, raw.fps)
-
-    # A plateau's first and last detected lines each carry frame error. Fit all
-    # of its lines, then reconcile the shared boundary with the neighbouring
-    # fit. This removes per-measure BPM wobble without erasing real changes.
-    fitted: list[tuple[float, float, int]] = []
-    for start, end in runs:
-        weight = end - start
-        if weight >= 2:
-            slope, intercept = np.polyfit(
-                bar_ticks[start:end + 1], bar_ms[start:end + 1], 1)
-            fitted.append((
-                float(intercept + slope * bar_ticks[start]),
-                float(intercept + slope * bar_ticks[end]),
-                weight,
-            ))
-        else:
-            fitted.append((float(bar_ms[start]), float(bar_ms[end]), weight))
-
-    boundary_ms = [fitted[0][0]]
-    for previous, following in zip(fitted, fitted[1:]):
-        boundary_ms.append(
-            (previous[1] * previous[2] + following[0] * following[2])
-            / (previous[2] + following[2]))
-    boundary_ms.append(fitted[-1][1])
-
-    selected_ms: list[float] = []
-    selected_ticks: list[float] = []
-    for run_index, (start, end) in enumerate(runs):
-        simple_ms = np.array(boundary_ms[run_index:run_index + 2])
-        simple_ticks = bar_ticks[[start, end]]
-        local_notes = note_ms[(bar_ms[start] <= note_ms)
-                              & (note_ms < bar_ms[end])]
-
-        observed = bar_ms[start:end + 1]
-        fraction = ((bar_ticks[start:end + 1] - bar_ticks[start])
-                    / (bar_ticks[end] - bar_ticks[start]))
-        start_shift = simple_ms[0] - observed[0]
-        end_shift = simple_ms[1] - observed[-1]
-        detailed_ms = observed + start_shift + fraction * (
-            end_shift - start_shift)
-        detailed_ticks = bar_ticks[start:end + 1]
-
-        simple = _grid_score(local_notes, simple_ms, simple_ticks,
-                             raw.tick_resolution)
-        detailed = _grid_score(local_notes, detailed_ms, detailed_ticks,
-                               raw.tick_resolution)
-        # Extra anchors must explain notes that would otherwise be off-grid.
-        # Merely shaving sub-tolerance residuals is frame-jitter overfitting.
-        if detailed[0] < simple[0]:
-            chosen_ms, chosen_ticks = detailed_ms, detailed_ticks
-        else:
-            chosen_ms, chosen_ticks = simple_ms, simple_ticks
-        if selected_ms:
-            chosen_ms, chosen_ticks = chosen_ms[1:], chosen_ticks[1:]
-        selected_ms.extend(chosen_ms)
-        selected_ticks.extend(chosen_ticks)
-
-    anchor_ms = np.asarray(selected_ms, dtype=float)
-    anchor_ticks = np.asarray(selected_ticks, dtype=float)
-    active_notes = note_ms[(bar_ms[0] <= note_ms) & (note_ms < bar_ms[-1])]
-    slope, intercept = np.polyfit(bar_ticks, bar_ms, 1)
-    global_ms = np.array([
-        intercept + slope * bar_ticks[0],
-        intercept + slope * bar_ticks[-1],
+def _tempo_clock_score(raw: RawChart, clock: TickClock
+                       ) -> tuple[int, float, int]:
+    """Auxiliary note-grid score; beat/barline residual fit happens first."""
+    note_ticks = np.asarray([
+        clock.ms_to_tick(note.trigger_ms) for note in raw.notes
     ])
-    global_ticks = bar_ticks[[0, -1]]
-    global_score = _grid_score(active_notes, global_ms, global_ticks,
-                               raw.tick_resolution)
-    selected_score = _grid_score(active_notes, anchor_ms, anchor_ticks,
-                                 raw.tick_resolution)
-    direct_score = _grid_score(active_notes, bar_ms, bar_ticks,
-                               raw.tick_resolution)
-    return min(
-        (global_score, global_ms, global_ticks),
-        (selected_score, anchor_ms, anchor_ticks),
-        (direct_score, bar_ms, bar_ticks),
-        key=lambda candidate: candidate[0],
-    )[1:]
+    distances = grid_distances(
+        note_ticks, ALLOWED_DENOMS, tick_resolution=raw.tick_resolution)
+    return (int(np.count_nonzero(distances > 6.0)),
+            float(np.sum(np.minimum(distances, 24.0) ** 2)),
+            len(clock.segments))
 
 
-def _add_submeasure_anchors(raw: RawChart, beat_ms: np.ndarray,
-                            beat_ordinals: list[int], bar_ms: np.ndarray,
-                            bar_ticks: np.ndarray, meters: list[int],
-                            anchor_ms: np.ndarray, anchor_ticks: np.ndarray,
-                            ) -> tuple[np.ndarray, np.ndarray]:
-    """Resolve a clear tempo step that occurs inside one measure.
+def _phase_fit_clock(clock: TickClock, result: ReconstructResult,
+                     barline_ticks: np.ndarray) -> TickClock:
+    phase = float(np.mean([
+        line.ms - clock.tick_to_ms(tick)
+        for line, tick in zip(result.barlines, barline_ticks, strict=True)
+    ]))
+    fitted = TickClock(
+        clock.segments, tick_zero_ms=clock.tick_zero_ms + phase,
+        tick_resolution=clock.tick_resolution)
+    fitted.bpm_bound_adjustments = list(clock.bpm_bound_adjustments)
+    return fitted
 
-    Measure averages cannot represent e.g. two beats at 200 BPM followed by
-    two at 211 BPM. A split is accepted only when it nearly eliminates the
-    beat-period residual and changes the period by at least 5%; ordinary
-    60-fps alternation therefore remains a single denoised tempo.
-    """
-    additions: list[tuple[float, float]] = []
-    note_ms = np.array([n.trigger_ms for n in raw.notes], dtype=float)
-    for start, meter in enumerate(meters):
-        if meter < 4:
-            continue
-        end = start + 1
-        first = beat_ordinals[start]
-        last = beat_ordinals[end]
-        count = last - first
-        if count < 4:
+
+def _normalized_tempo_clock(raw: RawChart, clock: TickClock) -> TickClock:
+    def normalized(bpm: float) -> float:
+        rounded = round(bpm / TEMPO_BPM_QUANTUM) * TEMPO_BPM_QUANTUM
+        return min(raw.max_bpm, max(raw.min_bpm, rounded))
+
+    segments = [BPMSegment(
+        segment.start_tick, segment.end_tick,
+        normalized(segment.bpm_start), normalized(segment.bpm_end),
+    ) for segment in clock.segments]
+    return TickClock(segments, tick_zero_ms=clock.tick_zero_ms,
+                     tick_resolution=clock.tick_resolution)
+
+
+def _expand_symmetric_subbeat_steps(raw: RawChart,
+                                    clock: TickClock) -> TickClock:
+    """Recover low-half/high/low-half steps hidden between beat flashes."""
+    resolution = raw.tick_resolution
+    expanded: list[BPMSegment] = []
+    changed = False
+    for index, segment in enumerate(clock.segments):
+        bpm = segment.bpm_start
+        high = 1.5 * bpm
+        low = 0.75 * bpm
+        neighbours = [clock.segments[i].bpm_start
+                      for i in (index - 1, index + 1)
+                      if 0 <= i < len(clock.segments)]
+        eligible = (
+            segment.is_constant
+            and segment.end_tick - segment.start_tick == 2 * resolution
+            and raw.min_bpm <= low <= high <= raw.max_bpm
+            and any(abs(neighbour - high) <= 0.05 * high
+                    for neighbour in neighbours)
+        )
+        if not eligible:
+            expanded.append(segment)
             continue
 
-        start_ms = float(np.interp(bar_ticks[start], anchor_ticks, anchor_ms))
-        end_ms = float(np.interp(bar_ticks[end], anchor_ticks, anchor_ms))
-        ordinals = np.arange(first, last + 1)
-        fraction = (ordinals - first) / count
-        corrected = beat_ms[ordinals] + (start_ms - beat_ms[first]) + fraction * (
-            (end_ms - beat_ms[last]) - (start_ms - beat_ms[first]))
-        periods = np.diff(corrected)
-        mean = float(np.mean(periods))
-        unsplit_residual = float(np.sum((periods - mean) ** 2))
-        if unsplit_residual <= 0:
+        start_ms = clock.tick_to_ms(segment.start_tick)
+        end_ms = clock.tick_to_ms(segment.end_tick)
+        onsets: list[float] = []
+        for event_ms in sorted(note.trigger_ms for note in raw.notes
+                               if start_ms <= note.trigger_ms < end_ms):
+            if not onsets or event_ms - onsets[-1] > 1000.0 / raw.fps:
+                onsets.append(float(event_ms))
+        if len(onsets) < 4:
+            expanded.append(segment)
             continue
 
-        candidates: list[tuple[float, int, float, float]] = []
-        for split in range(2, count - 1):
-            left, right = periods[:split], periods[split:]
-            left_mean, right_mean = float(np.mean(left)), float(np.mean(right))
-            residual = (float(np.sum((left - left_mean) ** 2))
-                        + float(np.sum((right - right_mean) ** 2)))
-            candidates.append((residual, split, left_mean, right_mean))
-        if not candidates:
-            continue
-        residual, split, left_mean, right_mean = min(candidates)
-        relative_change = abs(left_mean - right_mean) / (
-            0.5 * (left_mean + right_mean))
-        if (relative_change < SUBMEASURE_MIN_REL_CHANGE
-                or residual / unsplit_residual
-                > SUBMEASURE_MAX_RESIDUAL_RATIO):
-            continue
-        candidate_ms = np.array([start_ms, corrected[split], end_ms])
-        candidate_ticks = np.array([
-            bar_ticks[start],
-            (first + split - beat_ordinals[0]) * raw.tick_resolution,
-            bar_ticks[end],
+        half = resolution // 2
+        candidate = [
+            BPMSegment(0, half, low, low),
+            BPMSegment(half, half + resolution, high, high),
+            BPMSegment(half + resolution, 2 * resolution, low, low),
+        ]
+        local_clock = TickClock(
+            candidate, tick_zero_ms=0.0, tick_resolution=resolution)
+        observed_ticks = np.asarray([
+            clock.ms_to_tick(event_ms) for event_ms in onsets
         ])
-        local_notes = note_ms[(start_ms <= note_ms) & (note_ms < end_ms)]
-        if (_grid_score(local_notes, candidate_ms, candidate_ticks,
-                        raw.tick_resolution)[0]
-                > _grid_score(local_notes, np.array([start_ms, end_ms]),
-                              bar_ticks[[start, end]],
-                              raw.tick_resolution)[0]):
-            continue
-        additions.extend(zip(candidate_ms, candidate_ticks, strict=True))
+        candidate_ticks = segment.start_tick + np.asarray([
+            local_clock.ms_to_tick(event_ms - start_ms)
+            for event_ms in onsets
+        ])
 
-    if not additions:
-        return anchor_ms, anchor_ticks
-    by_tick = {float(tick): float(ms)
-               for ms, tick in zip(anchor_ms, anchor_ticks, strict=True)}
-    by_tick.update((float(tick), float(ms)) for ms, tick in additions)
-    ticks = np.array(sorted(by_tick))
-    return np.array([by_tick[tick] for tick in ticks]), ticks
+        def rhythm_cost(tick_values: np.ndarray) -> float:
+            costs = []
+            for tick in tick_values:
+                costs.append(min(
+                    abs(tick - round(tick / (4.0 * resolution / denominator))
+                        * (4.0 * resolution / denominator))
+                    + DEFAULT_ALPHA * np.log2(denominator)
+                    + (DEFAULT_TRIPLET_CONTEXT_PENALTY
+                       if denominator in TRIPLET_DENOMS else 0.0)
+                    for denominator in ALLOWED_DENOMS))
+            return float(np.mean(costs))
+
+        if (rhythm_cost(candidate_ticks) + SUBBEAT_GRID_GAIN
+                >= rhythm_cost(observed_ticks)):
+            expanded.append(segment)
+            continue
+
+        expanded.extend(BPMSegment(
+            segment.start_tick + part.start_tick,
+            segment.start_tick + part.end_tick,
+            part.bpm_start, part.bpm_end,
+        ) for part in candidate)
+        changed = True
+
+    if not changed:
+        return clock
+    refined = TickClock(expanded, tick_zero_ms=clock.tick_zero_ms,
+                        tick_resolution=resolution)
+    refined.bpm_bound_adjustments = list(clock.bpm_bound_adjustments)
+    return refined
 
 
 def clean_beat_times(beats: list[BeatEvent]) -> np.ndarray:
@@ -255,6 +293,114 @@ def clean_beat_times(beats: list[BeatEvent]) -> np.ndarray:
     inserting a beat would make arbitrary speed changes impossible to retain.
     """
     return np.array(sorted(set(float(b.ms) for b in beats)), dtype=float)
+
+
+def _meter_score(result: ReconstructResult) -> tuple[int, int]:
+    if not result.measure_meters:
+        return (10**9, 10**9)
+    variants = sum(meter != result.global_meter
+                   for meter in result.measure_meters)
+    changes = sum(left != right for left, right in zip(
+        result.measure_meters, result.measure_meters[1:]))
+    return variants + changes, sum(line.extrapolated for line in result.barlines)
+
+
+def _repair_score(result: ReconstructResult, beat_ms: np.ndarray, fps: float,
+                  edits: int) -> float:
+    """Shared meter/tempo/edit cost for observed-beat repair candidates."""
+    meter_anomalies, inferred_lines = _meter_score(result)
+    intervals = np.diff(beat_ms)
+    sigma = 1000.0 / fps
+    changes = np.abs(np.diff(intervals))
+    excess = np.maximum(0.0, changes - sigma) / sigma
+    tempo_cost = float(np.sum(np.minimum(excess * excess, 4.0)))
+    return (20.0 * meter_anomalies + 2.0 * inferred_lines + tempo_cost
+            + 12.0 * edits)
+
+
+def _gap_note_grid_cost(raw: RawChart, start_ms: float, end_ms: float,
+                        quarters: int) -> float:
+    """Use raw onsets only as a tie-breaker for a beat edit inside one gap."""
+    frame_ms = 1000.0 / raw.fps
+    onsets: list[float] = []
+    for event_ms in sorted(n.trigger_ms for n in raw.notes
+                           if start_ms <= n.trigger_ms <= end_ms):
+        if not onsets or event_ms - onsets[-1] > frame_ms:
+            onsets.append(float(event_ms))
+    if len(onsets) < 2 or end_ms <= start_ms:
+        return 0.0
+    resolution = getattr(raw, "tick_resolution", 192)
+    ticks = ((np.asarray(onsets) - start_ms) / (end_ms - start_ms)
+             * resolution * quarters)
+    distances = grid_distances(
+        ticks, ALLOWED_DENOMS, tick_resolution=resolution)
+    return float(np.mean(np.minimum(distances, 24.0) ** 2))
+
+
+def _repair_beats(raw: RawChart, beat_ms: np.ndarray
+                  ) -> tuple[np.ndarray, ReconstructResult, int, int]:
+    """Insert/delete only beat candidates that simplify the meter DP."""
+    reconstruction = reconstruct_barlines(
+        raw.barlines, _events(beat_ms, raw.fps),
+        last_event_ms=_last_event_ms(raw))
+    inserted = deleted = 0
+    while len(beat_ms) >= 3:
+        intervals = np.diff(beat_ms)
+        best: tuple[float, np.ndarray, ReconstructResult,
+                    int, int] | None = None
+        baseline = _repair_score(
+            reconstruction, beat_ms, raw.fps, inserted + deleted)
+
+        # A spurious mid-beat flash splits one normal interval into two shorts.
+        period = float(np.median(intervals))
+        tolerance = max(1000.0 / raw.fps, period * 0.08)
+        for i in range(1, len(beat_ms) - 1):
+            left, right = intervals[i - 1], intervals[i]
+            if (max(left, right) >= period * 0.8
+                    or abs(left + right - period) > tolerance):
+                continue
+            candidate = np.delete(beat_ms, i)
+            result = reconstruct_barlines(
+                raw.barlines, _events(candidate, raw.fps),
+                last_event_ms=_last_event_ms(raw))
+            score = _repair_score(
+                result, candidate, raw.fps, inserted + deleted + 1)
+            score += NOTE_GRID_COST * (
+                _gap_note_grid_cost(raw, beat_ms[i - 1], beat_ms[i + 1], 1)
+                - _gap_note_grid_cost(raw, beat_ms[i - 1], beat_ms[i + 1], 2))
+            if score < baseline and (best is None or score < best[0]):
+                best = score, candidate, result, 0, 1
+
+        for i, gap in enumerate(intervals):
+            neighbours = np.delete(intervals[max(0, i - 3):i + 4],
+                                   min(3, i))
+            if not len(neighbours):
+                continue
+            period = float(np.median(neighbours))
+            multiple = int(round(gap / period))
+            if not 2 <= multiple <= 4:
+                continue
+            if abs(gap / multiple - period) > max(1000.0 / raw.fps, period * 0.08):
+                continue
+            additions = beat_ms[i] + gap * np.arange(1, multiple) / multiple
+            candidate = np.insert(beat_ms, i + 1, additions)
+            result = reconstruct_barlines(
+                raw.barlines, _events(candidate, raw.fps),
+                last_event_ms=_last_event_ms(raw))
+            score = _repair_score(
+                result, candidate, raw.fps,
+                inserted + deleted + multiple - 1)
+            score += NOTE_GRID_COST * (
+                _gap_note_grid_cost(raw, beat_ms[i], beat_ms[i + 1], multiple)
+                - _gap_note_grid_cost(raw, beat_ms[i], beat_ms[i + 1], 1))
+            if score < baseline and (best is None or score < best[0]):
+                best = score, candidate, result, multiple - 1, 0
+        if best is None:
+            break
+        _, beat_ms, reconstruction, inserted_now, deleted_now = best
+        inserted += inserted_now
+        deleted += deleted_now
+    return beat_ms, reconstruction, inserted, deleted
 
 
 def _events(times: np.ndarray, fps: float) -> list[BeatEvent]:
@@ -274,32 +420,44 @@ def infer_timeline(raw: RawChart) -> Timeline:
     if len(beat_ms) < 2:
         raise ValueError("not enough reliable beats to infer a timeline")
 
-    reconstruction: ReconstructResult = reconstruct_barlines(
-        raw.barlines, _events(beat_ms, raw.fps),
-        last_event_ms=_last_event_ms(raw))
+    beat_ms, reconstruction, inserted_beats, deleted_beats = _repair_beats(
+        raw, beat_ms)
     if len(reconstruction.beat_indices) < 2:
         raise ValueError("not enough on-beat barlines to infer a timeline")
 
     origin = reconstruction.beat_indices[0]
-    bar_ms = np.array([b.ms for b in reconstruction.barlines], dtype=float)
     bar_ticks = np.array([
         (ordinal - origin) * raw.tick_resolution
         for ordinal in reconstruction.beat_indices
     ], dtype=float)
-    anchor_ms, anchor_ticks = _select_tempo_anchors(
-        raw, bar_ms, bar_ticks, reconstruction.measure_meters)
-    anchor_ms, anchor_ticks = _add_submeasure_anchors(
-        raw, beat_ms, reconstruction.beat_indices, bar_ms, bar_ticks,
-        reconstruction.measure_meters, anchor_ms, anchor_ticks)
+    observed_ms, observed_ticks = _tempo_observations(
+        beat_ms, reconstruction, raw.tick_resolution)
 
-    clock = TickClock.from_anchors(
-        anchor_ms, anchor_ticks,
-        tick_resolution=raw.tick_resolution,
-        max_error_ms=0.0,
-        min_bpm=raw.min_bpm,
-        max_bpm=raw.max_bpm)
+    if abs(raw.max_bpm - raw.min_bpm) < 1e-9:
+        # A configured fixed BPM is authoritative; fit only its absolute offset.
+        bpm = raw.min_bpm
+        ms_per_tick = 60_000.0 / (raw.tick_resolution * bpm)
+        tick_zero_ms = float(np.mean(
+            observed_ms - observed_ticks * ms_per_tick))
+        clock = TickClock([BPMSegment(
+            int(round(observed_ticks[0])), int(round(observed_ticks[-1])), bpm, bpm)],
+            tick_zero_ms=tick_zero_ms, tick_resolution=raw.tick_resolution)
+    else:
+        clocks = [
+            _expand_symmetric_subbeat_steps(
+                raw, _fit_tempo_clock(
+                    raw, observed_ms, observed_ticks, change_cost))
+            for change_cost in TEMPO_CHANGE_COSTS
+        ]
+        clock = min(clocks, key=lambda candidate:
+                    _tempo_clock_score(raw, candidate))
+        clock = _phase_fit_clock(clock, reconstruction, bar_ticks)
+        normalized = _phase_fit_clock(
+            _normalized_tempo_clock(raw, clock), reconstruction, bar_ticks)
+        clock = min((clock, normalized), key=lambda candidate:
+                    _tempo_clock_score(raw, candidate))
     barline_ticks = [int(tick) for tick in bar_ticks]
     return Timeline(
         clock, reconstruction.barlines, barline_ticks,
         reconstruction.time_signature, reconstruction.variants,
-        reconstruction.measure_meters)
+        reconstruction.measure_meters, inserted_beats, deleted_beats)

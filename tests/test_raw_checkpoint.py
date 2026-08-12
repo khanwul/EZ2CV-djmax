@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ez2cv.chart import build_chart
+from ez2cv.chart.clock import BPMSegment, TickClock
 from ez2cv.chart.meter import TimeSignature, TimeSigVariant
 from ez2cv.cli import main, run
 from ez2cv.detection import RawChart, TrackMetadata
@@ -48,7 +49,11 @@ def _raw_chart() -> RawChart:
             RawNote(2, "longnote", 1_000.0, 1_500.0, "green", 0.8),
         ],
         beats=[BeatEvent(i, i * 500.0, 10.0) for i in range(13)],
-        barlines=[BarlineEvent(i * 120.0, i * 2_000.0, 10.0) for i in range(4)],
+        barlines=[
+            BarlineEvent(i * 120.0, i * 2_000.0, 10.0)
+            for i in range(4)
+        ],
+        provenance={"config_sha256": "abc", "fixture": "unit"},
     )
 
 
@@ -75,6 +80,7 @@ class RawCheckpointTest(unittest.TestCase):
         self.assertEqual(loaded.tracks[0].name, "SIDE_L")
         self.assertEqual(loaded.tracks[0].role, "overlay")
         self.assertEqual(loaded.tracks[0].input_type, "side")
+        self.assertEqual(loaded.provenance["config_sha256"], "abc")
         chart = build_chart(loaded)
         self.assertEqual(chart.song_name, "demo")
         self.assertEqual(chart.difficulty, "SC")
@@ -88,16 +94,37 @@ class RawCheckpointTest(unittest.TestCase):
             len(chart.stats["rhythm"]["measure_grid_max_denominator"]),
             chart.stats["structure"]["measure_count"])
 
+        payload = serialize_chart(chart)
+        segments = []
+        for segment in payload["timing"]["tempo_segments"]:
+            bpm_start = segment.get("bpm", segment.get("bpm_start"))
+            bpm_end = segment.get("bpm", segment.get("bpm_end"))
+            segments.append(BPMSegment(
+                segment["start_tick"], segment["end_tick"],
+                bpm_start, bpm_end))
+        restored = TickClock(
+            segments, tick_zero_ms=payload["timing"]["tick_zero_ms"],
+            tick_resolution=payload["timing"]["ticks_per_quarter"])
+        original = TickClock(
+            chart.bpm_segments, tick_zero_ms=chart.measure_zero_ms,
+            tick_resolution=chart.tick_resolution)
+        for tick in chart.barlines_tick:
+            self.assertEqual(restored.tick_to_ms(tick),
+                             original.tick_to_ms(tick))
+
     def test_legacy_raw_note_without_timing_sigma_is_supported(self):
         payload = serialize_raw(_raw_chart())
+        payload["schema_version"] = "3.2"
         for note in payload["notes"]:
-            del note["timing_sigma_ms"]
+            del note["start_sigma_ms"]
+            del note["end_sigma_ms"]
+            del note["pairing_status"]
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "raw.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             loaded = read_raw(path)
 
-        self.assertEqual([note.timing_sigma_ms for note in loaded.notes],
+        self.assertEqual([note.start_sigma_ms for note in loaded.notes],
                          [0.0, 0.0])
 
     def test_v31_raw_gets_unknown_game_and_overlay_input_type(self):
@@ -117,11 +144,20 @@ class RawCheckpointTest(unittest.TestCase):
 
     def test_negative_timing_sigma_is_rejected(self):
         payload = serialize_raw(_raw_chart())
-        payload["notes"][0]["timing_sigma_ms"] = -1.0
+        payload["notes"][0]["start_sigma_ms"] = -1.0
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "raw.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "negative timing sigma"):
+                read_raw(path)
+
+    def test_non_192_raw_resolution_is_rejected(self):
+        payload = serialize_raw(_raw_chart())
+        payload["meta"]["tick_resolution"] = 96
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "raw.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid timing or lanes"):
                 read_raw(path)
 
     def test_invalid_schema_is_rejected(self):
@@ -178,7 +214,7 @@ class RawCheckpointTest(unittest.TestCase):
 
         payload = serialize_chart(chart)
         self.assertEqual((payload["format"], payload["version"]),
-                         ("ez2cv.chart", "3.2"))
+                         ("ez2cv.chart", "3.3"))
         self.assertEqual(payload["meta"]["game"], "djmax_respect_v")
         self.assertEqual(payload["meta"]["difficulty"], "SC")
         self.assertEqual(payload["timing"]["meter_events"], [
@@ -190,6 +226,9 @@ class RawCheckpointTest(unittest.TestCase):
         self.assertIs(payload["notes"][0]["off_grid"], False)
         self.assertEqual(payload["meta"]["tracks"][0]["name"], "SIDE_L")
         self.assertEqual(payload["meta"]["tracks"][0]["input_type"], "side")
+        self.assertIs(payload["notes"][0]["needs_review"], False)
+        self.assertEqual(len(payload["analysis"]["notes"]), len(chart.notes))
+        self.assertEqual(payload["analysis"]["notes"][0]["source_raw_note"], 0)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = write_chart(chart, root=temp_dir)
@@ -202,6 +241,8 @@ class RawCheckpointTest(unittest.TestCase):
         del payload["meta"]["game"]
         for track in payload["meta"]["tracks"]:
             del track["input_type"]
+        for note in payload["notes"]:
+            del note["needs_review"]
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "chart.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
@@ -210,6 +251,22 @@ class RawCheckpointTest(unittest.TestCase):
         self.assertEqual(loaded["meta"]["game"], "unknown")
         self.assertEqual(loaded["meta"]["tracks"][0]["input_type"], "unknown")
         self.assertEqual(loaded["meta"]["tracks"][1]["input_type"], "key")
+        self.assertIs(loaded["notes"][0]["needs_review"], False)
+
+    def test_current_formats_reject_invalid_game(self):
+        payloads = [
+            (serialize_raw(_raw_chart()), read_raw),
+            (serialize_chart(build_chart(_raw_chart())), read_chart),
+        ]
+        for payload, reader in payloads:
+            for game in ("", "   ", 1):
+                with self.subTest(reader=reader.__name__, game=game), \
+                        tempfile.TemporaryDirectory() as temp_dir:
+                    payload["meta"]["game"] = game
+                    path = Path(temp_dir) / "payload.json"
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "invalid game"):
+                        reader(path)
 
 
 if __name__ == "__main__":

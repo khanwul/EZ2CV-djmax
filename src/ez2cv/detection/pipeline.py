@@ -34,7 +34,7 @@ Usage
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 from ez2cv.config import RunConfig
@@ -50,6 +50,19 @@ from ez2cv.detection.barline import MeasureLineDetector, MeasureLineTracker, Bar
 # event type order for the chronological feed (a tie in ms must still open a
 # longnote head before it is closed by a tail)
 _EVENT_ORDER = {"lnhead": 0, "note": 1, "lntail": 2}
+
+
+def _frame_to_ms(frame: float, timestamps: list[float], fps: float) -> float:
+    """Interpolate a fractional frame on decoded PTS, extrapolating at ends."""
+    if not timestamps:
+        return frame / fps * 1000.0
+    left = int(np.floor(frame))
+    left = min(max(left, 0), len(timestamps) - 1)
+    right = min(left + 1, len(timestamps) - 1)
+    if left == right:
+        return timestamps[left] + (frame - left) * 1000.0 / fps
+    return timestamps[left] + (frame - left) * (
+        timestamps[right] - timestamps[left])
 
 
 def _print_progress(done: int, total: int, *, width: int = 40,
@@ -98,6 +111,7 @@ class RawChart:
     barlines: list[BarlineEvent]    # measure boundaries, sorted by frame
     frame_count: int
     orphan_tails: int               # tails with no matching head (dropped)
+    provenance: dict = field(default_factory=dict)
 
     @property
     def key_count(self) -> int:
@@ -144,7 +158,9 @@ class RawChart:
         mi = self.barline_interval_frames()
         # beats per measure, if the LED flashes once per beat: a sanity ratio
         beats_per_measure = (mi / bi) if bi > 0 else 0.0
-        sigmas = [note.timing_sigma_ms for note in self.notes]
+        sigmas = ([note.start_sigma_ms for note in self.notes]
+                  + [note.end_sigma_ms for note in self.notes
+                     if note.end_sigma_ms is not None])
         sigma_median = float(np.median(sigmas)) if sigmas else 0.0
         sigma_p95 = float(np.percentile(sigmas, 95)) if sigmas else 0.0
         lines = [
@@ -177,14 +193,15 @@ class RawChart:
 class DetectionPipeline:
     """Drive all detection components over one video pass."""
 
-    def __init__(self, cal: RunConfig):
+    def __init__(self, cal: RunConfig, *, force: bool = False):
         self.cal = cal
+        self.force = force
         # per-frame POW LED brightness, retained after run() for visualization
         self.beat_signal: np.ndarray | None = None
 
     def run(self, *, progress: bool = True) -> RawChart:
         """Decode the video once; return the raw ms-based RawChart."""
-        pre = Preprocessor(self.cal)
+        pre = Preprocessor(self.cal, force=self.force)
         s1 = ProjectionDetector(self.cal)
         s2 = TemplateMatcher(self.cal)
         tracker = NoteTracker(self.cal)
@@ -196,10 +213,12 @@ class DetectionPipeline:
         total = pre.frame_count             # best-effort, for the progress line
         events = []                         # all TriggerEvents, fed after sort
         barline_events: list[BarlineEvent] = []
+        timestamps: list[float] = []
         frame_count = 0
 
         for pf in pre:
             frame_count += 1
+            timestamps.append(pf.timestamp_ms)
             # note path
             s1r = s1.detect_frame(pf)
             s2r = s2.match_frame(pf, s1r)
@@ -218,6 +237,15 @@ class DetectionPipeline:
         barline_events.extend(mlt.flush())  # project bar lines still mid-air
         beat.finish()                       # confirm/drop a trailing candidate
         self.beat_signal = np.asarray(beat.signal)
+
+        # Track geometry in frames, then map every fractional crossing through
+        # the decoded presentation timeline in one place.
+        for event in events:
+            event.ms = _frame_to_ms(event.cross_frame, timestamps, self.cal.fps)
+        for event in beat.beats:
+            event.ms = _frame_to_ms(event.frame_index, timestamps, self.cal.fps)
+        for event in barline_events:
+            event.ms = _frame_to_ms(event.cross_frame, timestamps, self.cal.fps)
 
         # drop spurious double-detections (one physical note can spawn two
         # tracked edges that each emit), then feed the longnote state machine
@@ -255,4 +283,7 @@ class DetectionPipeline:
             barlines=barline_events,
             frame_count=frame_count,
             orphan_tails=lnsm.orphan_tails,
+            provenance={**self.cal.provenance,
+                        "timestamp_source": pre.timestamp_source,
+                        "alignment_offset_px": list(pre.alignment_offset)},
         )

@@ -11,7 +11,7 @@ Why a separate beat signal at all
 Note scroll speed is subject to SV (per-section visual speed gimmicks), so the
 note stream alone cannot distinguish a real tempo change from an SV trick. The
 POW LED flashes on the actual musical beat regardless of SV, so its interval is
-the ground-truth tempo reference. chart conversion uses these beats — together with the
+the tempo reference. Chart conversion uses these beats — together with the
 user-supplied BPM range — to build the tick grid and to tell a BPM change apart
 from an SV change.
 

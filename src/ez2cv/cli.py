@@ -49,7 +49,8 @@ def run(config_path: str | Path, *,
         chart_image: bool = True,
         debug_png: bool = False,
         debug_video: str | None = None,
-        progress: bool = True) -> tuple[Path, Path]:
+        progress: bool = True,
+        force: bool = False) -> tuple[Path, Path]:
     """Detect a video, checkpoint raw JSON, then build the tick chart."""
     started = time.monotonic()
     config = load_config(config_path)
@@ -58,7 +59,7 @@ def run(config_path: str | Path, *,
 
     _banner(f"Detection — video → milliseconds ({song})")
     config.summary()
-    pipeline = DetectionPipeline(config)
+    pipeline = DetectionPipeline(config, force=force)
     raw = pipeline.run(progress=progress)
     print(raw.summary())
 
@@ -88,7 +89,7 @@ def run(config_path: str | Path, *,
 
         start, end = _parse_range(debug_video, max_end=raw.frame_count)
         video_out = out_root / f"{song}_debug_overlay_{start}_{end}.mp4"
-        render_overlay_video(config, video_out, (start, end))
+        render_overlay_video(config, video_out, (start, end), force=force)
         print(f"  wrote {video_out}")
 
     if chart_image:
@@ -144,6 +145,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="START:END", help="render a detection overlay video")
     parser.add_argument("--quiet", action="store_true",
                         help="hide frame progress")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="allow FPS or panel-alignment calibration mismatches")
     return parser.parse_args(argv)
 
 
@@ -165,6 +169,9 @@ def main(argv: list[str] | None = None) -> int:
         print("detection debug options cannot be used with --from-raw",
               file=sys.stderr)
         return 2
+    if args.from_raw and args.force:
+        print("--force cannot be used with --from-raw", file=sys.stderr)
+        return 2
     failed = False
     for source in sources:
         try:
@@ -173,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 run(source, chart_image=args.chart_image,
                     debug_png=args.debug_png, debug_video=args.debug_video,
-                    progress=not args.quiet)
+                    progress=not args.quiet, force=args.force)
         except (ConfigError, OSError, RuntimeError, ValueError) as exc:
             print(f"error [{source}]: {exc}", file=sys.stderr)
             failed = True

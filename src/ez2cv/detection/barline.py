@@ -342,7 +342,7 @@ class MeasureLineTracker:
         if yb >= self.line_y:
             return None
         sp = self.speed.speed
-        if sp <= 0 or (self.line_y - yb) > 3 * sp:         # died too far short
+        if sp <= 0 or (self.line_y - yb) > 3 * sp + 1.0:   # 1px quantization slack
             return None
         cf = fb + (self.line_y - yb) / sp
         return BarlineEvent(cf, cf / self.fps * 1000.0, sb, extrapolated=True)

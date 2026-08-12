@@ -63,6 +63,7 @@ def grid_distances(raw_ticks, denominators: tuple[int, ...],
 
 def choose_measure_grid(raw_ticks, *, tick_resolution: int = 192,
                         max_tolerance_tick: float = DEFAULT_MAX_TOLERANCE_TICK,
+                        cost_tolerance: float = 0.0,
                         ) -> int:
     """Return the coarsest well-supported adaptive grid level for one measure."""
     # Chord lanes cross a fraction of a tick apart, but are one timing onset.
@@ -87,7 +88,9 @@ def choose_measure_grid(raw_ticks, *, tick_resolution: int = 192,
                                    tick_resolution=tick_resolution)
         fit = float(np.mean(np.minimum(distances, 24.0) ** 2))
         choices.append((fit + MEASURE_GRID_LEVEL_PENALTY * level, level))
-    return min(choices)[1]
+    best_cost = min(cost for cost, _ in choices)
+    return max(level for cost, level in choices
+               if cost <= best_cost + cost_tolerance)
 
 
 def choose_measure_grids(raw_ticks, barline_ticks,
@@ -139,7 +142,7 @@ def snap_tick(raw_tick: float,
             best = cand
 
     _, dist, denom, snapped_int = best
-    off_grid = dist > max_tolerance_tick
+    off_grid = bool(dist > max_tolerance_tick)
     base_distance = float(grid_distances(
         [raw_tick], ALLOWED_DENOMS,
         tick_resolution=tick_resolution)[0])
@@ -191,13 +194,18 @@ def snap_with_local_context(raw_ticks: list[float],
 
 
 def snap_by_measure(raw_ticks: list[float], barline_ticks: list[int],
-                    *, tick_resolution: int = 192
+                    *, tick_resolution: int = 192,
+                    grid_levels: list[int] | None = None,
+                    alpha: float = DEFAULT_ALPHA,
                     ) -> tuple[list[SnapResult], list[int]]:
     """Snap heads with one adaptive vocabulary shared by each measure."""
     ticks = np.asarray(raw_ticks, dtype=float)
     bars = np.asarray(barline_ticks, dtype=float)
-    levels = choose_measure_grids(
+    levels = (choose_measure_grids(
         ticks, bars, tick_resolution=tick_resolution)
+        if grid_levels is None else list(grid_levels))
+    if len(levels) != max(0, len(bars) - 1):
+        raise ValueError("one grid level required per measure")
     snaps: list[SnapResult | None] = [None] * len(ticks)
 
     for measure, (start, end) in enumerate(
@@ -209,7 +217,8 @@ def snap_by_measure(raw_ticks: list[float], barline_ticks: list[int],
         local = [float(ticks[index]) for index in indices]
         local_snaps = snap_with_local_context(
             local, tick_resolution=tick_resolution,
-            allowed_denoms=MEASURE_GRID_LEVELS[level], grid_level=level)
+            allowed_denoms=MEASURE_GRID_LEVELS[level], grid_level=level,
+            alpha=alpha)
         for index, snap in zip(indices, local_snaps, strict=True):
             snaps[int(index)] = snap
 
@@ -217,7 +226,8 @@ def snap_by_measure(raw_ticks: list[float], barline_ticks: list[int],
     for index, snap in enumerate(snaps):
         if snap is None:
             snaps[index] = snap_tick(
-                float(ticks[index]), tick_resolution=tick_resolution)
+                float(ticks[index]), tick_resolution=tick_resolution,
+                alpha=alpha)
     return [snap for snap in snaps if snap is not None], levels
 
 

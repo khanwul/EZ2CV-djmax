@@ -25,8 +25,12 @@ Usage
 
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
 import tomllib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import cv2
@@ -160,6 +164,9 @@ class RunConfig:
 
     # --- measurements --------------------------------------------------------
     pixels_per_frame: float
+    alignment_band_y: tuple[int, int] | None = None
+    alignment_max_shift: int = 0
+    provenance: dict = field(default_factory=dict)
 
     @property
     def track_count(self) -> int:
@@ -211,6 +218,9 @@ class RunConfig:
               f"template_scale={self.template_scale:.4f}")
         print(f"  beat ROI   : {self.beat_roi}  ch={self.beat_channel} "
               f"diff thr={self.beat_diff_threshold}")
+        if self.alignment_band_y is not None:
+            print(f"  alignment  : band_y={self.alignment_band_y}  "
+                  f"max_shift={self.alignment_max_shift}px")
         print(f"  measure ln : bright=[{self.measure_line.min_brightness},"
               f"{self.measure_line.max_brightness}]  "
               f"max_thick={self.measure_line.max_thickness}  "
@@ -242,6 +252,54 @@ def _load_toml(path: Path) -> dict:
 
 def _warn(msg: str) -> None:
     print(f"[config] WARNING: {msg}")
+
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def _git_commit(path: Path) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _build_provenance(*, config_root: Path, source_files: dict[str, Path],
+                      template_files: dict[str, Path], video_path: Path,
+                      resolved_config: dict) -> dict:
+    try:
+        package_version = version("ez2cv")
+    except PackageNotFoundError:
+        package_version = "unknown"
+    canonical = json.dumps(
+        resolved_config, sort_keys=True, separators=(",", ":")).encode()
+    video = {"path": str(video_path)}
+    if video_path.is_file():
+        cap = cv2.VideoCapture(str(video_path))
+        try:
+            fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+            video.update(
+                size=video_path.stat().st_size,
+                sha256=_sha256(video_path),
+                codec="".join(chr((fourcc >> (8 * i)) & 0xff) for i in range(4)),
+                fps=float(cap.get(cv2.CAP_PROP_FPS)),
+            )
+        finally:
+            cap.release()
+    return {
+        "ez2cv_version": package_version,
+        "git_commit": _git_commit(config_root),
+        "opencv_version": cv2.__version__,
+        "resolved_config": resolved_config,
+        "resolved_config_sha256": hashlib.sha256(canonical).hexdigest(),
+        "source_sha256": {name: _sha256(path)
+                          for name, path in source_files.items()},
+        "template_sha256": {name: _sha256(path)
+                            for name, path in template_files.items()},
+        "video_fingerprint": video,
+    }
 
 
 # =============================================================================
@@ -329,6 +387,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
 
     frame_w, frame_h = prof_res
     template_cache: dict[str, np.ndarray] = {}
+    template_files: dict[str, Path] = {}
 
     def _load_template(template_set: str, ntype: str) -> np.ndarray:
         if template_set not in templates_cfg:
@@ -339,9 +398,10 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
             raise ConfigError(
                 f"template set '{template_set}' has no '{ntype}' template")
         fname = templates_cfg[template_set][ntype]
+        fpath = tmpl_dir / fname
+        template_files[fname] = fpath
         if fname in template_cache:
             return template_cache[fname]
-        fpath = tmpl_dir / fname
         if not fpath.is_file():
             raise ConfigError(f"template image not found: {fpath}")
         img = cv2.imread(str(fpath), cv2.IMREAD_COLOR)
@@ -539,9 +599,9 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
     min_bpm = float(song["song"]["min_bpm"])
     max_bpm = float(song["song"]["max_bpm"])
     tick_resolution = int(song["song"]["resolution"])
-    if tick_resolution <= 0:
+    if tick_resolution != 192:
         raise ConfigError(
-            f"song.resolution must be > 0 (got {tick_resolution})")
+            f"song.resolution must be 192 (got {tick_resolution})")
     if min_bpm <= 0.0 or max_bpm <= 0.0:
         raise ConfigError(
             f"song.min_bpm and song.max_bpm must be > 0 "
@@ -550,6 +610,52 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
         raise ConfigError(
             f"song.min_bpm must be <= song.max_bpm "
             f"(got min_bpm={min_bpm}, max_bpm={max_bpm})")
+
+    resolved_config = {
+        "game": game,
+        "skin": skin_name,
+        "key_mode": key_mode,
+        "display_resolution": prof_res,
+        "fps": fps,
+        "note_speed": note_speed,
+        "tick_resolution": tick_resolution,
+        "bpm_range": [min_bpm, max_bpm],
+        "playfield": [pf["top"], pf["bottom"]],
+        "line_y": line_y,
+        "beat_roi": bi_geom,
+        "beat_channel": beat_channel,
+        "beat_diff_threshold": float(bi_skin["diff_threshold"]),
+        "measure_line": asdict(measure_line_cfg),
+        "pixels_per_frame": float(meas["pixels_per_frame"]),
+        "alignment": profile.get("alignment"),
+        "lanes": [{
+            "index": lane.index,
+            "name": lane.name,
+            "role": lane.role,
+            "input_type": lane.input_type,
+            "color": lane.color,
+            "template_set": lane.template_set,
+            "allowed_types": sorted(lane.allowed_types),
+            "x_range": lane.x_range,
+            "match_x_range": lane.match_x_range,
+            "note_height": lane.note_height,
+            "trigger_y_top": lane.trigger_y_top,
+            "timing_offset_px": lane.timing_offset_px,
+            "tail_release_offset_px": lane.tail_release_offset_px,
+            "tail_search_y_max": lane.tail_search_y_max,
+            "min_longnote_px": lane.min_longnote_px,
+            "detection_channel": lane.detection_channel,
+            "stage1_threshold": lane.stage1_threshold,
+            "matching_threshold": lane.matching_threshold,
+        } for lane in lanes],
+    }
+    provenance = _build_provenance(
+        config_root=config_root,
+        source_files={"song": song_path, "skin": skin_path,
+                      "profile": profile_path},
+        template_files=template_files,
+        video_path=video_path,
+        resolved_config=resolved_config)
 
     return RunConfig(
         song_name=song_name,
@@ -575,6 +681,11 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
         beat_diff_threshold=float(bi_skin["diff_threshold"]),
         measure_line=measure_line_cfg,
         pixels_per_frame=float(meas["pixels_per_frame"]),
+        alignment_band_y=(tuple(profile["alignment"]["band_y"])
+                          if "alignment" in profile else None),
+        alignment_max_shift=int(
+            profile.get("alignment", {}).get("max_shift_px", 0)),
+        provenance=provenance,
     )
 
 

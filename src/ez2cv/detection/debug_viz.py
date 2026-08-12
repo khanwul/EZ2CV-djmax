@@ -330,6 +330,7 @@ def render_overlay_video(
     *,
     trail_length: int = 8,
     progress: bool = True,
+    force: bool = False,
 ) -> Path:
     """Render a frame-range mp4 of detection's per-frame decisions.
 
@@ -358,7 +359,7 @@ def render_overlay_video(
     from ez2cv.detection.tracking import NoteTracker
     from ez2cv.detection.beat import BeatDetector
     from ez2cv.detection.barline import MeasureLineDetector, MeasureLineTracker
-    from ez2cv.detection.pipeline import _print_progress
+    from ez2cv.detection.pipeline import _frame_to_ms, _print_progress
 
     start, end = frame_range
     if not (0 <= start < end):
@@ -367,7 +368,7 @@ def render_overlay_video(
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pre = Preprocessor(cal)
+    pre = Preprocessor(cal, force=force)
     s1 = ProjectionDetector(cal)
     s2 = TemplateMatcher(cal)
     tracker = NoteTracker(cal)
@@ -385,10 +386,12 @@ def render_overlay_video(
     cum_triggers = 0
     cum_beats = 0
     cum_barlines = 0
+    timestamps: list[float] = []
 
     for pf in pre:
         if pf.frame_index >= end:
             break
+        timestamps.append(pf.timestamp_ms)
 
         s1r = s1.detect_frame(pf)
         s2r = s2.match_frame(pf, s1r)
@@ -397,6 +400,13 @@ def render_overlay_video(
         new_bars = mlt.step(pf.frame_index, ml_dets)
         new_beat = beat.step(pf)
         beat_signal_val = float(pf.beat_roi.mean())
+        for event in new_trigs:
+            event.ms = _frame_to_ms(event.cross_frame, timestamps, cal.fps)
+        for event in new_bars:
+            event.ms = _frame_to_ms(event.cross_frame, timestamps, cal.fps)
+        if new_beat is not None:
+            new_beat.ms = _frame_to_ms(
+                new_beat.frame_index, timestamps, cal.fps)
 
         cum_triggers += len(new_trigs)
         cum_barlines += len(new_bars)

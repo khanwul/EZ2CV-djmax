@@ -35,7 +35,7 @@ Output: RawNote objects, ms-based. Tick conversion / snapping is chart conversio
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -53,6 +53,7 @@ class TrackedEdge:
     trajectory: list                       # [(frame, y_top, score), ...]
     last_seen: int
     trigger_emitted: bool = False
+    type_scores: dict[str, float] = field(default_factory=dict)
 
     @property
     def last_y(self) -> int:
@@ -82,7 +83,14 @@ class RawNote:
     color: str
     confidence: float
     extrapolated: bool = False
-    timing_sigma_ms: float = 0.0
+    start_sigma_ms: float = 0.0
+    end_sigma_ms: float | None = None
+    pairing_status: str = "observed"
+
+    @property
+    def timing_sigma_ms(self) -> float:
+        """Compatibility alias for callers that only inspect note heads."""
+        return self.start_sigma_ms
 
 
 # =============================================================================
@@ -225,6 +233,8 @@ class NoteTracker:
                     continue
                 e.trajectory.append((frame_index, m.y_top, m.score))
                 e.last_seen = frame_index
+                e.type_scores[m.type] = e.type_scores.get(m.type, 0.0) + m.score
+                e.type = max(e.type_scores, key=e.type_scores.get)
                 used_e.add(id(e))
                 used_m.add(id(m))
 
@@ -235,7 +245,7 @@ class NoteTracker:
                 edges.append(TrackedEdge(
                     id=self._next_id, lane=res.lane_index, type=m.type,
                     trajectory=[(frame_index, m.y_top, m.score)],
-                    last_seen=frame_index))
+                    last_seen=frame_index, type_scores={m.type: m.score}))
                 self._next_id += 1
 
             # --- trigger crossings (interpolation) ------------------------
@@ -457,8 +467,9 @@ class NoteTracker:
     def _extrapolate_trigger(self, e):
         """Fallback: project a near-miss edge forward to the trigger line.
 
-        Tap onsets fit their recent trajectory; global speed remains the gate
-        and fallback. Longnote endpoints retain their paired-duration model.
+        Tap onsets and tails fit their recent trajectory; global speed remains
+        the gate and fallback. Held heads keep the global projection because
+        their visible trajectory can contain a stationary hold gap.
         """
         if len(e.trajectory) < 2:
             return None
@@ -533,10 +544,14 @@ class LongnoteStateMachine:
                 return None
             return RawNote(head.lane, "tap", head.ms, None, color,
                            conf, extrapolated=extrap,
-                           timing_sigma_ms=head.timing_sigma_ms)
+                           start_sigma_ms=head.timing_sigma_ms,
+                           pairing_status="short_pair")
         return RawNote(head.lane, "longnote", head.ms, end_ev.ms, color,
                        conf, extrapolated=extrap,
-                       timing_sigma_ms=head.timing_sigma_ms)
+                       start_sigma_ms=head.timing_sigma_ms,
+                       end_sigma_ms=end_ev.timing_sigma_ms,
+                       pairing_status=("observed" if end_ev.type == "lntail"
+                                       else "inferred_tail"))
 
     def feed(self, ev: TriggerEvent):
         """Consume one TriggerEvent; return a RawNote when one completes."""
@@ -547,7 +562,7 @@ class LongnoteStateMachine:
                 return None
             return RawNote(ev.lane, "tap", ev.ms, None, color, ev.confidence,
                            extrapolated=ev.extrapolated,
-                           timing_sigma_ms=ev.timing_sigma_ms)
+                           start_sigma_ms=ev.timing_sigma_ms)
 
         if ev.type == "lnhead":
             pending = self._open.get(ev.lane)
@@ -581,7 +596,8 @@ class LongnoteStateMachine:
                 return RawNote(pending.lane, "tap", pending.ms, None, color,
                                pending.confidence,
                                extrapolated=pending.extrapolated,
-                               timing_sigma_ms=pending.timing_sigma_ms)
+                               start_sigma_ms=pending.timing_sigma_ms,
+                               pairing_status="unclosed_head")
             return None
 
         if ev.type == "lntail":
@@ -600,7 +616,8 @@ class LongnoteStateMachine:
                 out.append(RawNote(lane, "tap", head.ms, None,
                                    self._colors[lane], head.confidence,
                                    extrapolated=head.extrapolated,
-                                   timing_sigma_ms=head.timing_sigma_ms))
+                                   start_sigma_ms=head.timing_sigma_ms,
+                                   pairing_status="unclosed_head"))
         self._open.clear()
         return out
 

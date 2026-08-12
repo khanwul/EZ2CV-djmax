@@ -15,10 +15,11 @@ from ez2cv.detection.beat import BeatEvent
 from ez2cv.detection.tracking import RawNote
 
 
-RAW_SCHEMA_VERSION = "3.2"
+RAW_SCHEMA_VERSION = "3.3"
+RAW_READABLE_VERSIONS = {"3.1", "3.2", "3.3"}
 CHART_FORMAT = "ez2cv.chart"
-CHART_VERSION = "3.2"
-_READABLE_VERSIONS = {"3.1", "3.2"}
+CHART_VERSION = "3.3"
+CHART_READABLE_VERSIONS = {"3.1", "3.2", "3.3"}
 
 
 def _reject_constant(value: str) -> None:
@@ -28,7 +29,7 @@ def _reject_constant(value: str) -> None:
 def _ms(value: float) -> float:
     if not math.isfinite(value):
         raise ValueError(f"non-finite ms value: {value}")
-    return round(float(value), 3)
+    return float(value)
 
 
 def _tick(value: int) -> int:
@@ -75,6 +76,7 @@ def serialize_raw(raw: RawChart) -> dict:
             "frame_count": int(raw.frame_count),
             "duration_ms": _ms(raw.duration_ms),
             "orphan_tails": int(raw.orphan_tails),
+            "provenance": raw.provenance,
         },
         "notes": [
             {
@@ -85,7 +87,10 @@ def serialize_raw(raw: RawChart) -> dict:
                 "end_ms": _ms(note.end_ms) if note.end_ms is not None else None,
                 "confidence": round(float(note.confidence), 4),
                 "extrapolated": bool(note.extrapolated),
-                "timing_sigma_ms": _ms(note.timing_sigma_ms),
+                "start_sigma_ms": _ms(note.start_sigma_ms),
+                "end_sigma_ms": (_ms(note.end_sigma_ms)
+                                 if note.end_sigma_ms is not None else None),
+                "pairing_status": note.pairing_status,
             }
             for note in raw.notes
         ],
@@ -117,17 +122,20 @@ def read_raw(path: str | Path) -> RawChart:
             source.read_text(encoding="utf-8"),
             parse_constant=_reject_constant,
         )
-        if payload["schema_version"] not in _READABLE_VERSIONS:
+        if payload["schema_version"] not in RAW_READABLE_VERSIONS:
             raise ValueError(
                 f"unsupported schema_version {payload['schema_version']!r}; "
-                f"expected one of {sorted(_READABLE_VERSIONS)!r}")
+                f"expected one of {sorted(RAW_READABLE_VERSIONS)!r}")
         meta = payload["meta"]
         if meta["difficulty"] not in {"NM", "HD", "MX", "SC"}:
             raise ValueError("invalid difficulty")
+        game = meta.get("game", "unknown")
+        if not isinstance(game, str) or not game.strip():
+            raise ValueError("invalid game")
         raw = RawChart(
             song_name=str(meta["song"]),
             difficulty=str(meta["difficulty"]),
-            game=str(meta.get("game", "unknown")),
+            game=game,
             skin_name=str(meta["skin"]),
             key_mode=str(meta["key_mode"]),
             tracks=tuple(TrackMetadata(
@@ -148,6 +156,7 @@ def read_raw(path: str | Path) -> RawChart:
             max_bpm=float(meta["max_bpm"]),
             frame_count=int(meta["frame_count"]),
             orphan_tails=int(meta["orphan_tails"]),
+            provenance=dict(meta.get("provenance", {})),
             notes=[RawNote(
                 lane=int(note["lane"]),
                 type=str(note["type"]),
@@ -157,7 +166,14 @@ def read_raw(path: str | Path) -> RawChart:
                 color=str(note["color"]),
                 confidence=float(note["confidence"]),
                 extrapolated=bool(note["extrapolated"]),
-                timing_sigma_ms=float(note.get("timing_sigma_ms", 0.0)),
+                start_sigma_ms=float(note.get(
+                    "start_sigma_ms", note.get("timing_sigma_ms", 0.0))),
+                end_sigma_ms=(
+                    None if note["end_ms"] is None
+                    else float(note["end_sigma_ms"])
+                    if note.get("end_sigma_ms") is not None
+                    else 0.0 if "end_sigma_ms" not in note else None),
+                pairing_status=str(note.get("pairing_status", "observed")),
             ) for note in payload["notes"]],
             beats=[BeatEvent(
                 frame_index=int(beat["frame_index"]),
@@ -177,14 +193,17 @@ def read_raw(path: str | Path) -> RawChart:
     numeric = [raw.fps, raw.note_speed, raw.min_bpm, raw.max_bpm]
     numeric.extend(note.trigger_ms for note in raw.notes)
     numeric.extend(note.end_ms for note in raw.notes if note.end_ms is not None)
-    numeric.extend(note.timing_sigma_ms for note in raw.notes)
+    numeric.extend(note.start_sigma_ms for note in raw.notes)
+    numeric.extend(note.end_sigma_ms for note in raw.notes
+                   if note.end_sigma_ms is not None)
     numeric.extend(beat.ms for beat in raw.beats)
     numeric.extend(barline.ms for barline in raw.barlines)
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError(f"invalid raw chart {source}: non-finite number")
-    if (not raw.game or raw.fps <= 0 or raw.tick_resolution <= 0
-            or not raw.tracks):
+    if raw.fps <= 0 or raw.tick_resolution != 192 or not raw.tracks:
         raise ValueError(f"invalid raw chart {source}: invalid timing or lanes")
+    if not isinstance(raw.game, str) or not raw.game.strip():
+        raise ValueError(f"invalid raw chart {source}: invalid game")
     if [track.index for track in raw.tracks] != list(range(raw.key_count)):
         raise ValueError(f"invalid raw chart {source}: invalid track indexes")
     if any(track.role not in {"normal", "overlay"} for track in raw.tracks):
@@ -202,8 +221,14 @@ def read_raw(path: str | Path) -> RawChart:
         raise ValueError(f"invalid raw chart {source}: note lane out of range")
     if any(note.type not in {"tap", "longnote"} for note in raw.notes):
         raise ValueError(f"invalid raw chart {source}: unknown note type")
-    if any(note.timing_sigma_ms < 0 for note in raw.notes):
+    if any(note.start_sigma_ms < 0 or (
+            note.end_sigma_ms is not None and note.end_sigma_ms < 0)
+            for note in raw.notes):
         raise ValueError(f"invalid raw chart {source}: negative timing sigma")
+    if any(note.pairing_status not in {
+            "observed", "inferred_tail", "unclosed_head", "short_pair"}
+            for note in raw.notes):
+        raise ValueError(f"invalid raw chart {source}: invalid pairing status")
     if any(note.type == "longnote" and (
             note.end_ms is None or note.end_ms <= note.trigger_ms)
             for note in raw.notes):
@@ -221,6 +246,7 @@ def _note_payload(note: ChartNote, note_id: int) -> dict:
         "start_tick": _tick(note.start_tick),
         "end_tick": _tick(note.end_tick) if note.end_tick is not None else None,
         "off_grid": bool(note.off_grid),
+        "needs_review": bool(note.needs_review),
     }
 
 
@@ -230,11 +256,11 @@ def _bpm_segment_payload(segment: BPMSegment) -> dict:
         "end_tick": _tick(segment.end_tick),
     }
     if segment.is_constant:
-        out.update(bpm=round(float(segment.bpm_start), 4),
+        out.update(bpm=float(segment.bpm_start),
                    interpolation="step")
     else:
-        out.update(bpm_start=round(float(segment.bpm_start), 4),
-                   bpm_end=round(float(segment.bpm_end), 4),
+        out.update(bpm_start=float(segment.bpm_start),
+                   bpm_end=float(segment.bpm_end),
                    interpolation="linear_time")
     return out
 
@@ -293,7 +319,7 @@ def serialize_chart(chart: Chart) -> dict:
         "notes": [
             _note_payload(note, note_id)
             for note_id, note in enumerate(chart.notes)],
-        "analysis": {"stats": chart.stats},
+        "analysis": {"stats": chart.stats, "notes": chart.diagnostics},
     }
 
 
@@ -304,7 +330,7 @@ def read_chart(path: str | Path) -> dict:
         chart = json.loads(source.read_text(encoding="utf-8"),
                            parse_constant=_reject_constant)
         if (chart["format"] != CHART_FORMAT
-                or chart["version"] not in _READABLE_VERSIONS):
+                or chart["version"] not in CHART_READABLE_VERSIONS):
             raise ValueError(
                 f"unsupported chart {chart.get('format')!r} "
                 f"version {chart.get('version')!r}")
@@ -325,7 +351,7 @@ def read_chart(path: str | Path) -> dict:
         meters = timing["meter_events"]
         if lane_count <= 0 or resolution <= 0:
             raise ValueError("invalid lanes or tick resolution")
-        if not isinstance(meta["game"], str) or not meta["game"]:
+        if not isinstance(meta["game"], str) or not meta["game"].strip():
             raise ValueError("invalid game")
         if [track["index"] for track in tracks] != list(range(lane_count)):
             raise ValueError("invalid track indexes")
@@ -360,6 +386,8 @@ def read_chart(path: str | Path) -> dict:
             if meter["numerator"] <= 0 or meter["denominator"] <= 0:
                 raise ValueError("invalid meter event")
         for note in notes:
+            if chart["version"] in {"3.1", "3.2"}:
+                note.setdefault("needs_review", False)
             if not 0 <= note["lane"] < lane_count:
                 raise ValueError("note lane out of range")
             if (note["end_tick"] is not None
@@ -367,6 +395,8 @@ def read_chart(path: str | Path) -> dict:
                 raise ValueError("invalid longnote end")
             if not isinstance(note["off_grid"], bool):
                 raise ValueError("off_grid must be boolean")
+            if not isinstance(note["needs_review"], bool):
+                raise ValueError("needs_review must be boolean")
         numeric = [meta["duration_ms"], timing["tick_zero_ms"]]
         if not all(math.isfinite(float(value)) for value in numeric):
             raise ValueError("non-finite chart metadata")

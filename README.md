@@ -10,7 +10,7 @@ This repository does not include gameplay videos, charts, note skins, or other g
 
 The current analysis assumes the following fixed capture setup:
 
-- 1920x1080 at constant 60 fps; variable-frame-rate video is unsupported
+- 1920x1080 at constant 60 fps
 - In-game note speed 6.0, calibrated independently from EZ2ON's speed values
 - Centered gear with a fully opaque, black playfield
 - A note skin with little or no brightness animation
@@ -29,17 +29,14 @@ Requirements:
 - Python 3.14
 - [uv](https://github.com/astral-sh/uv)
 
-Install dependencies:
+Install dependencies and run the tests:
 
 ```bash
 uv sync
-```
-
-Run the existing tests:
-
-```bash
 uv run python -m unittest discover -s tests -v
 ```
+
+## Usage
 
 Set `setup.difficulty` to `NM`, `HD`, `MX`, or `SC`.
 
@@ -56,17 +53,26 @@ Or run one config explicitly:
 uv run ez2cv "config/<song>.toml"
 ```
 
+`--force` permits an FPS or panel-alignment mismatch and records the fallback
+in the raw checkpoint. It should not be used for ordinary extraction.
+
+Rebuild a chart without decoding the video again:
+
+```bash
+uv run ez2cv "out/<song>/<difficulty>/<song>_raw.json" --from-raw
+```
+
 The configured skin's local template images must exist under `config/skins/djmax/<mode>/`.
 
 ## Output
 
 The pipeline writes two files under `out/<song>/<difficulty>/`:
 
-- `<song>_raw.json`: reloadable millisecond-domain checkpoint (schema 3.2)
-- `<song>_chart.json`: `ez2cv.chart` 3.2 chart with explicit game and input types,
-  tempo, and meter timelines
+- `<song>_raw.json`: reloadable millisecond-domain checkpoint (schema 3.3)
+- `<song>_chart.json`: `ez2cv.chart` 3.3 chart with explicit game and input types,
+  tempo and meter timelines, statistics, and per-note diagnostics
 
-EZ2ON-specific predicted combo statistics were removed because DJMAX scoring behavior has not been verified.
+EZ2ON-specific predicted combo statistics are omitted because DJMAX scoring behavior has not been verified.
 
 ## License
 
