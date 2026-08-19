@@ -19,15 +19,13 @@ Real-video hazards this tracker is built around
 1. CAPTURE STUTTER. The recording repeats a frame every ~8 frames, so a note
    appears to move 0px then ~2x next frame. Fix: a DIRECTIONAL, stutter-aware
    gate — notes only move DOWN, by 0..~2*speed per frame.
-2. LONGNOTE HEAD HOLD. A longnote head's template stops matching for ~10
-   frames as it is "caught" at the line, then reappears HELD just past it.
-   Fix: an un-emitted *lnhead* edge near the trigger gets an extended grace
-   period so the post-gap (held) detection bridges the gap and the crossing
-   interpolates. Grace is lnhead-ONLY: a tap or tail just vanishes, so letting
-   it linger would make it steal a later note's detections.
-3. MISSED POST-TRIGGER FRAME. If the stutter eats the one frame a tap is
-   visible past the line, its crossing is extrapolated from a recent local
-   trajectory fit, with global speed as the plausibility gate and fallback.
+2. DJMAX LONGNOTE ENDPOINTS. Unlike EZ2ON, both longnote endpoints keep
+   descending through the judgment line. Head, tail, and tap crossings all use
+   the same recent trajectory fit; only the tail's calibrated release offset
+   differs.
+3. MISSED POST-TRIGGER FRAME. If the stutter eats the one frame an endpoint is
+   visible past the line, its crossing is extrapolated from that local fit,
+   with global speed as the plausibility gate and fallback.
 
 Output: RawNote objects, ms-based. Tick conversion / snapping is chart conversion.
 """
@@ -162,21 +160,17 @@ class NoteTracker:
 
     def __init__(self, cal: RunConfig, *,
                  max_stale_frames: int = 4,
-                 max_stale_grace: int = 15,
                  up_jitter_px: float = 6.0,
                  down_jitter_px: float = 20.0,
                  local_fit_points: int = 8,
                  timing_sigma_floor_frames: float = 0.25):
         """
         max_stale_frames : drop a normal edge unseen this many frames.
-        max_stale_grace  : an un-emitted *lnhead* edge near the trigger is kept
-                           this many frames so the held detection can bridge.
         up/down_jitter_px : slack on the directional association gate.
         """
         self.cal = cal
         self.fps = cal.fps
         self.max_stale = max_stale_frames
-        self.max_grace = max_stale_grace
         self.up_jitter = up_jitter_px
         self.down_jitter = down_jitter_px
         self.local_fit_points = local_fit_points
@@ -260,7 +254,7 @@ class NoteTracker:
             # --- prune; extrapolate near-trigger un-emitted edges ---------
             survivors = []
             for e in edges:
-                if self._keep(e, frame_index, speed):
+                if self._keep(e, frame_index):
                     survivors.append(e)
                 elif not e.trigger_emitted:
                     ev = self._extrapolate_trigger(e)
@@ -269,10 +263,7 @@ class NoteTracker:
             self._lanes[res.lane_index] = survivors
 
         # --- refresh global speed -----------------------------------------
-        # Only DESCENDING edges (still above the judgment line) count. A held
-        # longnote head sits motionless past the line; including its 0-px
-        # "displacement" every frame would drag the median speed down, narrow
-        # the gate, and fragment fast notes.
+        # Only descending edges still above the judgment line count.
         moving = [e for lst in self._lanes.values() for e in lst
                   if self.cal.lanes[e.lane].include_in_consensus
                   and e.trajectory[-1][1]
@@ -304,11 +295,8 @@ class NoteTracker:
     def _gate_dist(self, e, m, frame_index, speed):
         """Distance to prediction if m is inside e's directional gate, else None.
 
-        Notes only descend. For a recently-seen edge the note kept moving, so
-        the gate reaches last_y + elapsed*speed + one stutter step. For a
-        grace-kept lnhead (stale beyond max_stale) the head is being HELD near
-        the line, so its continuation can only be near the trigger — the gate
-        is clamped there, which stops it grabbing a far-away later note.
+        Notes only descend. The gate reaches last_y + elapsed*speed plus one
+        stutter step. Wide L/R tap masks retain one extra retry frame.
         """
         lane = self.cal.lanes[e.lane]
         trigger = lane.trigger_y_top
@@ -319,15 +307,10 @@ class NoteTracker:
         if elapsed <= self.max_stale:
             hi = e.last_y + elapsed * speed + speed + down_jitter
             pred = e.last_y + elapsed * speed
-        elif ((role == "overlay" and "tap" in lane.allowed_types
-               and elapsed == self.max_stale + 1)
-              or (e.type == "lnhead" and not e.trigger_emitted
-                  and e.last_y >= trigger - 3 * speed
-                  and e.last_y <= trigger + lane.note_height
-                  and elapsed <= self.max_grace)):
-            # L/R's wide, sparse mask needs its existing one-frame retry.
-            # Normal taps do not: they can steal the next note in a dense
-            # same-lane stream. An un-emitted longnote head keeps full grace.
+        elif (role == "overlay" and "tap" in lane.allowed_types
+              and elapsed == self.max_stale + 1):
+            # L/R's wide, sparse mask needs one retry. Normal tracks do not:
+            # an expired edge can steal the next note in a dense lane.
             hi = trigger + lane.note_height + down_jitter
             pred = float(trigger)
         else:
@@ -336,47 +319,22 @@ class NoteTracker:
             return abs(m.y_top - pred)
         return None
 
-    def _keep(self, e, frame_index, speed) -> bool:
+    def _keep(self, e, frame_index) -> bool:
         """Whether an edge survives this frame's prune."""
-        if frame_index - e.last_seen <= self.max_stale:
-            return True
-        # extended grace ONLY for a longnote head: it stops matching for ~10
-        # frames as it is caught at the line, then reappears HELD. A tap or
-        # tail just vanishes — letting it linger would steal a later note.
-        lane = self.cal.lanes[e.lane]
-        trigger = lane.trigger_y_top
-        if (e.type == "lnhead" and not e.trigger_emitted
-                and e.last_y >= trigger - 3 * speed
-                and e.last_y <= trigger + lane.note_height
-                and frame_index - e.last_seen <= self.max_grace):
-            return True
-        return False
+        return frame_index - e.last_seen <= self.max_stale
 
     def _tail_lag_frames(self, e, speed: float | None = None) -> float:
-        """Frames to ADD to a longnote tail's crossing time.
-
-        A note/lnhead is hit the instant its tracked top reaches the line, and
-        that is accurate. A longnote does not END at the tail-top crossing — the
-        tail must descend until it has fully PASSED the line (its bottom, one
-        ``note_height`` lower, reaches the line) AND a skin-specific release
-        margin (``tail_release_offset_px``) of further descent before the hold
-        actually lets go. So the release is ``(note_height + offset) / speed``
-        frames later. Without the offset the tail-bottom model alone lands the
-        end ~12-13px short, which snaps a longnote one 1/64 note too short
-        (measured on Dream Walker 221 LN, GEHENNA 102 LN). Applied as a post-hoc
-        lag on the COMPUTED crossing rather than by moving the trigger line, so
-        the edge tracking, pairing and extrapolation gates are untouched (the
-        bias-fix must not change which notes are detected, only an end time).
-        """
+        """Frames after center crossing before a calibrated tail release."""
         sp = self._lane_speed(e.lane) if speed is None else speed
         lane = self.cal.lanes[e.lane]
-        descent = lane.note_height + lane.tail_release_offset_px
-        return (descent / sp) if sp > 0 else 0.0
+        return (lane.tail_release_offset_px / sp) if sp > 0 else 0.0
 
     def _timing_offset_frames(self, e, speed: float | None = None) -> float:
-        """Convert a track's measured visual-edge bias to frame time."""
+        """Advance bottom-touch tracking to centre judgment plus calibration."""
         sp = self._lane_speed(e.lane) if speed is None else speed
-        offset = getattr(self.cal.lanes[e.lane], "timing_offset_px", 0)
+        lane = self.cal.lanes[e.lane]
+        offset = (lane.note_height / 2.0
+                  + getattr(lane, "timing_offset_px", 0))
         return (offset / sp) if sp > 0 else 0.0
 
     def _local_crossing(self, trajectory, target_y: float
@@ -427,32 +385,14 @@ class NoteTracker:
             fa, ya, sa = traj[i]
             fb, yb, sb = traj[i + 1]
             if ya < trigger <= yb and yb != ya:
-                # A normal straddle spans consecutive frames, so linear
-                # interpolation lands the crossing accurately. But a grace-kept
-                # lnhead straddles across the HOLD gap: it reached the line
-                # during its pre-hold descent (`fa, ya` just above), then sat
-                # motionless for several frames and reappears HELD just past the
-                # line (`fb, yb`). Interpolating across that stationary gap
-                # smears the crossing over the whole hold and post-dates it by
-                # several frames. The head actually crossed right after `fa`, so
-                # project from there at the global descent speed instead.
                 sp = self._lane_speed(e.lane)
                 sigma_ms = self.timing_sigma_floor_frames / self.fps * 1000.0
-                if fb - fa > self.max_stale and e.type == "lnhead" and sp > 0:
-                    local = self._local_crossing(traj[:i + 1], trigger)
-                    if local is None:
-                        projection = (trigger - ya) / sp
-                        cf = fa + projection
-                        sigma_ms = self._fallback_sigma_ms(projection)
-                    else:
-                        cf, sp, sigma_ms = local
-                else:
-                    frac = (trigger - ya) / (yb - ya)
-                    cf = fa + frac * (fb - fa)
-                    local = self._local_crossing(traj[:i + 2], trigger)
-                    if local is not None:
-                        _, sp, local_sigma_ms = local
-                        sigma_ms = max(sigma_ms, local_sigma_ms)
+                frac = (trigger - ya) / (yb - ya)
+                cf = fa + frac * (fb - fa)
+                local = self._local_crossing(traj[:i + 2], trigger)
+                if local is not None:
+                    _, sp, local_sigma_ms = local
+                    sigma_ms = max(sigma_ms, local_sigma_ms)
                 if e.type == "lntail":
                     cf += self._tail_lag_frames(e, sp)
                 cf += self._timing_offset_frames(e, sp)
@@ -467,9 +407,8 @@ class NoteTracker:
     def _extrapolate_trigger(self, e):
         """Fallback: project a near-miss edge forward to the trigger line.
 
-        Tap onsets and tails fit their recent trajectory; global speed remains
-        the gate and fallback. Held heads keep the global projection because
-        their visible trajectory can contain a stationary hold gap.
+        Every DJMAX endpoint fits its recent trajectory; global speed remains
+        the gate and fallback.
         """
         if len(e.trajectory) < 2:
             return None
@@ -483,12 +422,7 @@ class NoteTracker:
                  + (self.down_jitter if lane.role == "normal" else 0))
         if global_speed <= 0 or (trigger - yb) > reach:
             return None
-        # Longnote endpoints form one duration measurement with separately
-        # calibrated head-hold and release behavior. Keep their established
-        # global-speed projection so tap-onset refinement cannot move combo
-        # boundaries.
-        local = (None if e.type != "note"
-                 else self._local_crossing(e.trajectory, trigger))
+        local = self._local_crossing(e.trajectory, trigger)
         if local is None:
             sp = global_speed
             projection = (trigger - yb) / sp

@@ -1,7 +1,7 @@
 """Convert a millisecond-domain ``RawChart`` into a tick-domain ``Chart``.
 
 Snapped notes do not feed back into timeline inference. DJMAX longnote tails
-retain the detector's per-track calibration and snap as relative lengths.
+retain explicit release calibration and snap as relative lengths.
 """
 
 from __future__ import annotations
@@ -148,7 +148,8 @@ def _convert_and_snap_notes(raw: RawChart, clock: TickClock,
     R = clock.tick_resolution
 
     # Heads select per-measure vocabularies. DJMAX tail timing is already
-    # calibrated per track in detection, so longnote lengths stay relative.
+    # measured at center crossing in detection, so longnote lengths stay
+    # relative.
     raw_heads = [clock.ms_to_tick(n.trigger_ms) for n in raw.notes]
     head_grid_floor = choose_measure_grid(
         raw_heads, tick_resolution=R, cost_tolerance=1.0)

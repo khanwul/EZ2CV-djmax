@@ -121,8 +121,9 @@ template, and video fingerprints.
 7. Snap note heads to a measure-adaptive grid from `1/4` through `1/192`.
    Fine grids require repeated distinct onsets; chord lanes count as one onset.
    Timing misses covered by endpoint uncertainty are reported separately.
-8. Snap longnote lengths relative to their snapped heads. DJMAX visual-edge
-   offsets remain calibrated per track during detection.
+8. Recognize tap, longnote-head, and longnote-tail timing when each visual
+   element's center reaches the judgment line, then snap longnote lengths
+   relative to their snapped heads.
 
 `Chart` contains metadata, BPM and meter timelines, notes, barlines, statistics,
 and per-note diagnostics. It does not depend on detection configuration objects;

@@ -107,7 +107,7 @@ class LaneConfig:
     x_range: tuple[int, int]
     match_x_range: tuple[int, int]
     note_height: int
-    trigger_y_top: int
+    trigger_y_top: int                    # bottom-touch tracking coordinate
     timing_offset_px: int
     tail_release_offset_px: int
     tail_search_y_max: int
@@ -213,7 +213,8 @@ class RunConfig:
         print(f"  fps/speed  : {self.fps} / {self.note_speed}   "
               f"tick_res={self.tick_resolution}  bpm=[{self.min_bpm},{self.max_bpm}]")
         print(f"  playfield  : y[{self.playfield_top},{self.playfield_bottom}]  "
-              f"line_y={self.line_y}  trigger_y_top={self.trigger_template_y_top}")
+              f"line_y={self.line_y}  "
+              f"tracking_y_top={self.trigger_template_y_top}")
         print(f"  note       : {self.note_width}x{self.note_height}px  "
               f"template_scale={self.template_scale:.4f}")
         print(f"  beat ROI   : {self.beat_roi}  ch={self.beat_channel} "
@@ -466,7 +467,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
             x_range=(x1, x2),
             match_x_range=(mx1, mx2),
             note_height=int(normal_cfg["note_height"]),
-            trigger_y_top=int(normal_cfg["trigger_y_top"]),
+            trigger_y_top=line_y - int(normal_cfg["note_height"]),
             timing_offset_px=int(normal_cfg.get("timing_offset_px", 0)),
             tail_release_offset_px=int(normal_cfg.get("tail_release_offset_px", 0)),
             tail_search_y_max=int(normal_cfg["tail_search_y_max"]),
@@ -507,7 +508,7 @@ def load_config(song_toml_path: str | Path) -> RunConfig:
             match_x_range=(max(0, x1 - track_margin),
                            min(frame_w, x2 + track_margin)),
             note_height=int(track["note_height"]),
-            trigger_y_top=int(track["trigger_y_top"]),
+            trigger_y_top=line_y - int(track["note_height"]),
             timing_offset_px=int(track.get("timing_offset_px", 0)),
             tail_release_offset_px=int(track.get("tail_release_offset_px", 0)),
             tail_search_y_max=int(track["tail_search_y_max"]),

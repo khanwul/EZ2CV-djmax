@@ -30,9 +30,10 @@ class VideoValidationTest(unittest.TestCase):
     def test_debug_overlay_uses_physical_alignment_coordinates(self):
         frame = np.zeros((100, 120, 3), dtype=np.uint8)
         calibration = SimpleNamespace(
-            lanes=[SimpleNamespace(x_range=(30, 70))],
+            lanes=[SimpleNamespace(x_range=(30, 70), trigger_y_top=76,
+                                   note_height=8)],
             playfield_top=10, playfield_bottom=90,
-            line_y=80, trigger_template_y_top=70, note_height=8,
+            line_y=80,
             beat_roi=(10, 20, 20, 30),
         )
         pf = SimpleNamespace(frame_index=0, timestamp_ms=0.0)

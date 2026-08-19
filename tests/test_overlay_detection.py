@@ -100,7 +100,7 @@ class OverlayDetectionTest(unittest.TestCase):
         self.assertEqual([[match.type for match in result.matches]
                           for result in matches], [["note"], ["note"]])
 
-    def test_clipped_overlay_head_reaches_trigger(self):
+    def test_clipped_overlay_head_reaches_detection_trigger(self):
         side = _overlay(0, hue_ranges=((75, 105),),
                         allowed_types={"longnote"}, color="cyan")
         cal = SimpleNamespace(lanes=[side], playfield_top=0)
@@ -262,8 +262,8 @@ class OverlayDetectionTest(unittest.TestCase):
         ])])
 
         self.assertEqual(len(events), 1)
-        self.assertAlmostEqual(events[0].cross_frame, 0.25)
-        self.assertAlmostEqual(events[0].ms, 1000 / 240)
+        self.assertAlmostEqual(events[0].cross_frame, 0.75)
+        self.assertAlmostEqual(events[0].ms, 12.5)
 
     def test_overlay_tracker_does_not_swap_head_and_tail(self):
         overlay = SimpleNamespace(
@@ -316,6 +316,20 @@ class OverlayDetectionTest(unittest.TestCase):
         self.assertIsNone(state.feed(head))
         self.assertIsNone(state.feed(tail))
         self.assertEqual(state.flush(), [])
+
+    def test_lr_short_pair_is_a_tap(self):
+        lr = SimpleNamespace(index=0, color="red",
+                             allowed_types=frozenset({"tap", "longnote"}),
+                             min_longnote_px=35)
+        state = LongnoteStateMachine(SimpleNamespace(
+            lanes=[lr], fps=60.0, pixels_per_frame=24.0))
+
+        self.assertIsNone(state.feed(TriggerEvent(
+            0, "lnhead", 0.0, 0.0, 1.0)))
+        note = state.feed(TriggerEvent(0, "lntail", 1.0, 10.0, 1.0))
+
+        self.assertEqual((note.type, note.pairing_status),
+                         ("tap", "short_pair"))
 
     def test_later_head_preserves_a_head_whose_tail_was_missed(self):
         lane = SimpleNamespace(index=0, color="red",

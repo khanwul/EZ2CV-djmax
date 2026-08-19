@@ -112,10 +112,11 @@ class ProjectionDetector:
             thr = lane_config.stage1_threshold
 
         # --- binary lit mask + maximal runs --------------------------------
-        # Suppress rows at/below this track's judgment trigger.
-        # The full projection is still returned — measureline.py reads it.
+        # Suppress rows at/below this track's detection trigger. Event timing
+        # later advances by half a note so the visual centre reaches the line.
         lit = proj > thr
-        scan_y_max = max(0, lane_config.trigger_y_top - self.cal.playfield_top)
+        scan_y_max = max(
+            0, lane_config.trigger_y_top - self.cal.playfield_top)
         if scan_y_max < lit.shape[0]:
             lit[scan_y_max:] = False
         runs: list[Run] = []

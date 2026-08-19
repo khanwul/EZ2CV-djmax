@@ -38,9 +38,9 @@ def annotate_stage1(
     for ln in cal.lanes:
         cv2.rectangle(vis, (ln.x_range[0], cal.playfield_top),
                       (ln.x_range[1], cal.playfield_bottom), _C_LANE, 1)
+        cv2.line(vis, (ln.x_range[0], ln.trigger_y_top),
+                 (ln.x_range[1], ln.trigger_y_top), _C_TRIGGER, 1)
     cv2.line(vis, (x_lo - 30, cal.line_y), (x_hi + 30, cal.line_y), _C_JUDGE, 1)
-    cv2.line(vis, (x_lo - 30, cal.trigger_template_y_top),
-             (x_hi + 30, cal.trigger_template_y_top), _C_TRIGGER, 1)
 
     for res in results:
         ln = cal.lanes[res.lane_index]
@@ -93,7 +93,7 @@ def plot_stage1_projection(
             ax.axhspan(r.y_start, r.y_end, color=color, alpha=0.5)
             ax.text(255, r.y_center, f"{r.kind[0]}{r.length}",
                     fontsize=7, va="center", ha="right")
-        ax.axhline(cal.trigger_template_y_top - res.roi_y_origin,
+        ax.axhline(cal.lanes[res.lane_index].trigger_y_top - res.roi_y_origin,
                    color="#d33", lw=0.8, alpha=0.6)
         ax.set_title(f"L{res.lane_index+1} ({res.color})", fontsize=9)
         ax.set_xlim(0, 260)
@@ -141,9 +141,9 @@ def annotate_stage2(
     for ln in cal.lanes:
         cv2.rectangle(vis, (ln.x_range[0], cal.playfield_top),
                       (ln.x_range[1], cal.playfield_bottom), _C_LANE, 1)
+        cv2.line(vis, (ln.x_range[0], ln.trigger_y_top),
+                 (ln.x_range[1], ln.trigger_y_top), _C_TRIGGER, 1)
     cv2.line(vis, (x_lo - 30, cal.line_y), (x_hi + 30, cal.line_y), _C_JUDGE, 1)
-    cv2.line(vis, (x_lo - 30, cal.trigger_template_y_top),
-             (x_hi + 30, cal.trigger_template_y_top), _C_TRIGGER, 1)
 
     confirmed_runs = {id(m.source_run) for r in s2_results for m in r.matches}
 
@@ -162,7 +162,7 @@ def annotate_stage2(
         for m in res.matches:
             color = _C_MATCH.get(m.type, (255, 255, 255))
             y0 = m.y_top
-            y1 = m.y_top + cal.note_height
+            y1 = y0 + ln.note_height
             cv2.rectangle(vis, (ln.x_range[0] + 1, y0),
                           (ln.x_range[1] - 1, y1), color, 2)
             cv2.putText(vis, f"{m.type} {m.score:.2f}",
@@ -443,10 +443,11 @@ def _draw_overlay_frame(
         cv2.rectangle(vis, (ln.x_range[0] + dx, cal.playfield_top + dy),
                       (ln.x_range[1] + dx, cal.playfield_bottom + dy),
                       _C_LANE, 1)
+        trigger_y = ln.trigger_y_top + dy
+        cv2.line(vis, (ln.x_range[0] + dx, trigger_y),
+                 (ln.x_range[1] + dx, trigger_y), _C_TRIGGER, 1)
     cv2.line(vis, (x_lo - 30, cal.line_y + dy),
              (x_hi + 30, cal.line_y + dy), _C_JUDGE, 1)
-    cv2.line(vis, (x_lo - 30, cal.trigger_template_y_top + dy),
-             (x_hi + 30, cal.trigger_template_y_top + dy), _C_TRIGGER, 1)
 
     # --- rejected Stage 1 runs (faint) ---------------------------------------
     confirmed_runs = {id(m.source_run) for r in s2_results for m in r.matches}
@@ -466,7 +467,7 @@ def _draw_overlay_frame(
         for m in res.matches:
             color = _C_MATCH.get(m.type, (255, 255, 255))
             y0 = m.y_top + dy
-            y1 = y0 + cal.note_height
+            y1 = y0 + ln.note_height
             cv2.rectangle(vis, (ln.x_range[0] + dx + 1, y0),
                           (ln.x_range[1] + dx - 1, y1), color, 2)
             cv2.putText(vis, f"{m.type[:2]} {m.score:.2f}",
@@ -488,11 +489,11 @@ def _draw_overlay_frame(
                 fade = max(0.25, 1.0 - age * _TRAIL_FADE)
                 color = tuple(int(c * fade) for c in base)
                 radius = max(1, 3 - age // 3)
-                cv2.circle(vis, (cx, int(y) + dy + cal.note_height // 2),
+                cv2.circle(vis, (cx, int(y) + dy + ln.note_height // 2),
                            radius, color, -1, cv2.LINE_AA)
             last_y = int(e.trajectory[-1][1]) + dy
             cv2.putText(vis, f"#{e.id}",
-                        (cx + 6, last_y + cal.note_height // 2 + 4),
+                        (cx + 6, last_y + ln.note_height // 2 + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.32,
                         (220, 220, 220), 1, cv2.LINE_AA)
 

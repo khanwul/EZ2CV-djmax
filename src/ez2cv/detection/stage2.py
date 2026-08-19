@@ -181,9 +181,8 @@ class TemplateMatcher:
                 matches.append(Match(
                     s1.lane_index, "lntail", tail_y, 0, score, run))
             # Once the lower edge reaches the scan ceiling, the real head is
-            # hidden by the judgment zone. Report the trigger position so the
-            # tracker emits the start now instead of extrapolating it at tail
-            # release. Before that point, use the visible endpoint geometry.
+            # hidden by the judgment zone. Report the detection trigger; the
+            # tracker applies the centre-crossing time after this match.
             head_y = (scan_y_max if run.y_end >= scan_y_max
                       else run.y_end - lane_config.note_height)
             matches.append(Match(

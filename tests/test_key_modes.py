@@ -20,7 +20,6 @@ MODES = {
         "tracks": 6,
         "pitch": 120,
         "height": 44,
-        "timing_offset": 11,
         "names": ["SIDE_L", "K1", "K2", "K3", "K4", "SIDE_R"],
     },
     "5b": {
@@ -28,7 +27,6 @@ MODES = {
         "tracks": 7,
         "pitch": 96,
         "height": 35,
-        "timing_offset": 0,
         "names": ["SIDE_L", "K1", "K2", "K3", "K4", "K5", "SIDE_R"],
     },
     "6b": {
@@ -36,7 +34,6 @@ MODES = {
         "tracks": 8,
         "pitch": 80,
         "height": 30,
-        "timing_offset": 13,
         "names": ["SIDE_L", "K1", "K2", "K3", "K4", "K5", "K6", "SIDE_R"],
     },
     "8b": {
@@ -44,7 +41,6 @@ MODES = {
         "tracks": 10,
         "pitch": 80,
         "height": 30,
-        "timing_offset": 0,
         "names": ["SIDE_L", "K1", "K2", "K3", "L", "R", "K4", "K5", "K6", "SIDE_R"],
     },
 }
@@ -147,10 +143,11 @@ class KeyModeConfigTest(unittest.TestCase):
                     all(lane.note_height == expected["height"] for lane in normals)
                 )
                 self.assertTrue(
-                    all(
-                        lane.timing_offset_px == expected["timing_offset"]
-                        for lane in normals
-                    )
+                    all(lane.timing_offset_px == 0 for lane in normals)
+                )
+                self.assertTrue(
+                    all(lane.trigger_y_top == cal.line_y - lane.note_height
+                        for lane in cal.lanes)
                 )
                 self.assertTrue(
                     all(lane.allowed_types == {"tap", "longnote"} for lane in normals)
@@ -164,8 +161,7 @@ class KeyModeConfigTest(unittest.TestCase):
                 )
 
     def test_side_tracks_are_overlapping_longnote_only_tracks(self):
-        timing_offsets = {"4b": -6, "5b": -17, "6b": 0}
-        for mode in timing_offsets:
+        for mode in ("4b", "5b", "6b"):
             with self.subTest(mode=mode):
                 cal = self._load(mode)
                 left, right = cal.lanes[0], cal.lanes[-1]
@@ -180,7 +176,7 @@ class KeyModeConfigTest(unittest.TestCase):
                     self.assertEqual(lane.templates, {})
                     self.assertFalse(lane.include_in_consensus)
                     self.assertEqual(lane.coverage_threshold, 0.50)
-                    self.assertEqual(lane.timing_offset_px, timing_offsets[mode])
+                    self.assertEqual(lane.timing_offset_px, 0)
 
     def test_8b_is_six_normal_tracks_plus_l_r_and_side_tracks(self):
         cal = self._load("8b")
@@ -196,7 +192,7 @@ class KeyModeConfigTest(unittest.TestCase):
             self.assertEqual(lane.templates, {})
             self.assertEqual(lane.note_height, 26)
             self.assertEqual(lane.trigger_y_top, 729)
-            self.assertEqual(lane.timing_offset_px, -5)
+            self.assertEqual(lane.timing_offset_px, 0)
             self.assertFalse(lane.include_in_consensus)
 
         side_left, side_right = cal.lanes[0], cal.lanes[9]
@@ -208,7 +204,8 @@ class KeyModeConfigTest(unittest.TestCase):
             self.assertEqual(lane.input_type, "side")
             self.assertEqual(lane.template_set, "side_cyan")
             self.assertEqual(lane.allowed_types, {"longnote"})
-            self.assertEqual(lane.timing_offset_px, -17)
+            self.assertEqual(lane.trigger_y_top, 751)
+            self.assertEqual(lane.timing_offset_px, 0)
             self.assertFalse(lane.include_in_consensus)
 
 

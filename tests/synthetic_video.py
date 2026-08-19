@@ -12,9 +12,10 @@ from ez2cv.config import LaneConfig, MeasureLineConfig, RunConfig
 
 FPS = 60.0
 SPEED = 4.0
-TRIGGER = 120
 LINE_Y = 130
 NOTE_HEIGHT = 10
+TRACK_TRIGGER = LINE_Y - NOTE_HEIGHT
+CENTER_Y_TOP = LINE_Y - NOTE_HEIGHT / 2
 LANES = ((60, 90), (90, 120))
 BEAT_FRAMES = tuple(range(20, 261, 30))
 BARLINE_FRAMES = (20, 140, 260)
@@ -68,14 +69,16 @@ def make_fixture(path: Path, alignment_offset=(0, 0),
                           LANES[0][0] + align_x:
                           LANES[-1][1] + align_x] = 80
             for lane, crossing in taps:
-                y = int(round(TRIGGER + SPEED * (frame_index - crossing)))
+                y = int(round(CENTER_Y_TOP + SPEED * (frame_index - crossing)))
                 _blit(frame, templates["note"],
                       LANES[lane][0] + align_x, y + align_y)
 
             lane, head_crossing, release = longnote
-            tail_crossing = release - NOTE_HEIGHT / SPEED
-            head_y = int(round(TRIGGER + SPEED * (frame_index - head_crossing)))
-            tail_y = int(round(TRIGGER + SPEED * (frame_index - tail_crossing)))
+            tail_crossing = release
+            head_y = int(round(
+                CENTER_Y_TOP + SPEED * (frame_index - head_crossing)))
+            tail_y = int(round(
+                CENTER_Y_TOP + SPEED * (frame_index - tail_crossing)))
             top, bottom = max(10, tail_y), min(150, head_y + NOTE_HEIGHT)
             if top < bottom:
                 frame[top + align_y:bottom + align_y,
@@ -94,9 +97,9 @@ def make_fixture(path: Path, alignment_offset=(0, 0),
         color="white", template_set="synthetic",
         allowed_types=frozenset(("tap", "longnote")),
         x_range=x_range, match_x_range=x_range,
-        note_height=NOTE_HEIGHT, trigger_y_top=TRIGGER,
+        note_height=NOTE_HEIGHT, trigger_y_top=TRACK_TRIGGER,
         timing_offset_px=0, tail_release_offset_px=0,
-        tail_search_y_max=TRIGGER, min_longnote_px=10,
+        tail_search_y_max=TRACK_TRIGGER, min_longnote_px=10,
         include_in_consensus=True,
         detection_channel="gray", stage1_threshold=50.0,
         matching_threshold=0.75, templates=templates)

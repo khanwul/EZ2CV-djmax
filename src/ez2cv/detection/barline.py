@@ -203,9 +203,9 @@ class MeasureLineTracker:
     screen at once. It reuses NoteTracker's directional, stutter-aware gate and
     its interpolate/extrapolate crossing logic.
 
-    Crossing reference is `line_y`, not `trigger_template_y_top`: a note is
-    tracked by its 22px template's top edge, but a 1px line simply crosses when
-    its own centre reaches the judgment line.
+    Crossing reference is `line_y`, not `trigger_template_y_top`: note timing
+    converts its template top into a center-crossing target, while a 1px line
+    already exposes its center directly.
     """
 
     def __init__(self, cal: RunConfig, *,
